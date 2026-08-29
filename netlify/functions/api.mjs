@@ -294,6 +294,21 @@ export async function handler(event, context) {
       return json(200, { userId, balances: out });
     }
 
+    // POST /balance-restore { userId, balanceId } — move a balance back to Actual
+    if (route === '/balance-restore' && method === 'POST') {
+      const { userId, balanceId } = readBody(event);
+      const target = await loadManagedUser(userId);
+      const balances = normBalances(target.app_metadata);
+      const b = findBalance(balances, balanceId);
+      if (!b) return json(404, { error: 'Balance not found.' });
+      if (b.archived) {
+        b.archived = false;
+        pushBalHist(b, { at: nowIso(), by: user.email, type: 'restored' });
+      }
+      const out = await saveBalances(userId, target.app_metadata, balances);
+      return json(200, { userId, balances: out });
+    }
+
     // POST /balance-delete { userId, balanceId } — permanently remove an
     // archived balance
     if (route === '/balance-delete' && method === 'POST') {
