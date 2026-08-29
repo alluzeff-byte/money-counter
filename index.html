@@ -313,6 +313,18 @@
       padding: 0.75rem 1.25rem 1.25rem;
       overflow-y: auto;
     }
+    .modal-foot {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+      padding: 0 1.25rem 1.25rem;
+    }
+    #confirm-text {
+      white-space: pre-line;
+      font-size: 0.92rem;
+      line-height: 1.5;
+      padding-top: 1.25rem;
+    }
     .hidden { display: none !important; }
   </style>
 </head>
@@ -461,6 +473,16 @@
         <button type="button" class="modal-close" id="history-close" aria-label="Close">&times;</button>
       </div>
       <div class="modal-body history" id="history-body"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="confirm-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-text">
+      <div class="modal-body" id="confirm-text"></div>
+      <div class="modal-foot">
+        <button type="button" id="confirm-cancel">Cancel</button>
+        <button type="button" class="primary" id="confirm-ok">OK</button>
+      </div>
     </div>
   </div>
 
@@ -825,23 +847,25 @@
       if (balView === 'archived') {
         var b = curBal();
         if (!b) return;
-        if (!window.confirm('Restore “' + b.label + '” (' + fmt(b.amount) + ') to Actual for ' + u.name + '?')) return;
-        balPlus.disabled = true;
-        adminStatus.textContent = 'Restoring…';
-        adminStatus.className = 'msg';
-        apiJson('/balance-restore', jsonReq({ userId: u.id, balanceId: b.id }, 'POST'))
-          .then(function (res) {
-            u.balances = res.balances;
-            allBalances = res.balances;
-            showBalanceAt(0);
-            adminStatus.textContent = '“' + b.label + '” restored to Actual.';
-            adminStatus.className = 'msg ok';
-          })
-          .catch(function (err) {
-            adminStatus.textContent = err.message;
-            adminStatus.className = 'msg err';
-          })
-          .then(function () { balPlus.disabled = false; });
+        askConfirm('Restore “' + b.label + '” (' + fmt(b.amount) + ') to Actual for ' + u.name + '?').then(function (ok) {
+          if (!ok) return;
+          balPlus.disabled = true;
+          adminStatus.textContent = 'Restoring…';
+          adminStatus.className = 'msg';
+          apiJson('/balance-restore', jsonReq({ userId: u.id, balanceId: b.id }, 'POST'))
+            .then(function (res) {
+              u.balances = res.balances;
+              allBalances = res.balances;
+              showBalanceAt(0);
+              adminStatus.textContent = '“' + b.label + '” restored to Actual.';
+              adminStatus.className = 'msg ok';
+            })
+            .catch(function (err) {
+              adminStatus.textContent = err.message;
+              adminStatus.className = 'msg err';
+            })
+            .then(function () { balPlus.disabled = false; });
+        });
         return;
       }
 
@@ -874,27 +898,28 @@
           'It moves to the Archived list. A pending top-up request is discarded.'
         : 'Permanently delete “' + b.label + '” (' + fmt(b.amount) + ') for ' + u.name + '?\n\n' +
           'This cannot be undone.';
-      if (!window.confirm(msg)) return;
-
-      balMinus.disabled = true;
-      adminStatus.textContent = archiving ? 'Archiving…' : 'Deleting…';
-      adminStatus.className = 'msg';
-      apiJson(archiving ? '/balance-archive' : '/balance-delete',
-        jsonReq({ userId: u.id, balanceId: b.id }, 'POST'))
-        .then(function (res) {
-          u.balances = res.balances;
-          allBalances = res.balances;
-          showBalanceAt(0);
-          adminStatus.textContent = archiving
-            ? '“' + b.label + '” archived.'
-            : '“' + b.label + '” deleted.';
-          adminStatus.className = 'msg ok';
-        })
-        .catch(function (err) {
-          adminStatus.textContent = err.message;
-          adminStatus.className = 'msg err';
-        })
-        .then(function () { balMinus.disabled = false; });
+      askConfirm(msg).then(function (ok) {
+        if (!ok) return;
+        balMinus.disabled = true;
+        adminStatus.textContent = archiving ? 'Archiving…' : 'Deleting…';
+        adminStatus.className = 'msg';
+        apiJson(archiving ? '/balance-archive' : '/balance-delete',
+          jsonReq({ userId: u.id, balanceId: b.id }, 'POST'))
+          .then(function (res) {
+            u.balances = res.balances;
+            allBalances = res.balances;
+            showBalanceAt(0);
+            adminStatus.textContent = archiving
+              ? '“' + b.label + '” archived.'
+              : '“' + b.label + '” deleted.';
+            adminStatus.className = 'msg ok';
+          })
+          .catch(function (err) {
+            adminStatus.textContent = err.message;
+            adminStatus.className = 'msg err';
+          })
+          .then(function () { balMinus.disabled = false; });
+      });
     });
 
     balViewSelect.addEventListener('change', function () {
@@ -1093,6 +1118,33 @@
       if (e.key === 'Escape' && !historyModal.classList.contains('hidden')) closeHistory();
     });
 
+    // Centred confirmation dialog — a Promise<boolean> replacement for window.confirm.
+    var confirmModal = $('confirm-modal'), confirmText = $('confirm-text');
+    var confirmOk = $('confirm-ok'), confirmCancel = $('confirm-cancel');
+    var confirmResolver = null;
+    function askConfirm(msg) {
+      return new Promise(function (resolve) {
+        confirmText.textContent = msg;
+        confirmModal.classList.remove('hidden');
+        confirmResolver = resolve;
+        confirmOk.focus();
+      });
+    }
+    function settleConfirm(result) {
+      if (confirmModal.classList.contains('hidden')) return;
+      confirmModal.classList.add('hidden');
+      var r = confirmResolver; confirmResolver = null;
+      if (r) r(result);
+    }
+    confirmOk.addEventListener('click', function () { settleConfirm(true); });
+    confirmCancel.addEventListener('click', function () { settleConfirm(false); });
+    confirmModal.addEventListener('click', function (e) { if (e.target === confirmModal) settleConfirm(false); });
+    document.addEventListener('keydown', function (e) {
+      if (confirmModal.classList.contains('hidden')) return;
+      if (e.key === 'Escape') settleConfirm(false);
+      else if (e.key === 'Enter') settleConfirm(true);
+    });
+
     function onNameUserSelect() {
       var u = allUsersById[nameUserSelect.value];
       if (!u) return;
@@ -1126,32 +1178,33 @@
 
       var msg = (n >= 0 ? 'Add ' : 'Subtract ') + fmt(Math.abs(n)) + ' ' + (n >= 0 ? 'to' : 'from')
         + ' “' + b.label + '” for ' + u.name + '?\n\n' + fmt(b.amount) + ' → ' + fmt(projected);
-      if (!window.confirm(msg)) {
-        adminStatus.textContent = 'Cancelled.';
+      askConfirm(msg).then(function (ok) {
+        if (!ok) {
+          adminStatus.textContent = 'Cancelled.';
+          adminStatus.className = 'msg';
+          return;
+        }
+        saveBtn.disabled = true;
+        adminStatus.textContent = 'Working…';
         adminStatus.className = 'msg';
-        return;
-      }
-
-      saveBtn.disabled = true;
-      adminStatus.textContent = 'Working…';
-      adminStatus.className = 'msg';
-      apiJson('/balance', jsonReq(
-        { userId: u.id, balanceId: b.id, amount: n, mode: 'delta' }, 'PUT'
-      ))
-        .then(function (res) {
-          u.balances = res.balances;
-          allBalances = res.balances;
-          showBalanceAt(balanceIdx);
-          var cur = curBal();
-          adminStatus.textContent = (n >= 0 ? 'Added ' : 'Subtracted ') + fmt(Math.abs(n))
-            + ' — “' + cur.label + '” is now ' + fmt(cur.amount) + '.';
-          adminStatus.className = 'msg ok';
-        })
-        .catch(function (err) {
-          adminStatus.textContent = err.message;
-          adminStatus.className = 'msg err';
-        })
-        .then(function () { saveBtn.disabled = false; });
+        apiJson('/balance', jsonReq(
+          { userId: u.id, balanceId: b.id, amount: n, mode: 'delta' }, 'PUT'
+        ))
+          .then(function (res) {
+            u.balances = res.balances;
+            allBalances = res.balances;
+            showBalanceAt(balanceIdx);
+            var cur = curBal();
+            adminStatus.textContent = (n >= 0 ? 'Added ' : 'Subtracted ') + fmt(Math.abs(n))
+              + ' — “' + cur.label + '” is now ' + fmt(cur.amount) + '.';
+            adminStatus.className = 'msg ok';
+          })
+          .catch(function (err) {
+            adminStatus.textContent = err.message;
+            adminStatus.className = 'msg err';
+          })
+          .then(function () { saveBtn.disabled = false; });
+      });
     });
 
     saveNameBtn.addEventListener('click', function () {
