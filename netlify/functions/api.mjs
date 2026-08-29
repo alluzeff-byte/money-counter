@@ -198,6 +198,8 @@ export async function handler(event, context) {
     } catch (e) { console.error('healUser:', e && e.message); }
   };
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   const notifyAdmins = async (subject, text) => {
     const key = process.env.RESEND_API_KEY;
     if (!key) return;
@@ -209,17 +211,34 @@ export async function handler(event, context) {
         .filter(isEmail),
     )];
     if (!recipients.length) return;
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      signal: AbortSignal.timeout(7000),
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: process.env.NOTIFY_FROM || 'Money Counter <onboarding@resend.dev>',
-        to: recipients,
-        subject,
-        text,
-      }),
+    const body = JSON.stringify({
+      from: process.env.NOTIFY_FROM || 'Money Counter <onboarding@resend.dev>',
+      to: recipients, subject, text,
     });
+    // Resend's default limit is 2 requests/sec — retry a 429 (or 5xx) after a
+    // pause so bursts of requests all get their email.
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          signal: AbortSignal.timeout(6000),
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body,
+        });
+        if (res.ok) return;
+        const txt = await res.text().catch(() => '');
+        if ((res.status === 429 || res.status >= 500) && attempt < 2) {
+          console.error(`Resend ${res.status}, retrying (${attempt + 1}): ${txt.slice(0, 200)}`);
+          await sleep(1200 + attempt * 900);
+          continue;
+        }
+        console.error(`Resend failed ${res.status}: ${txt.slice(0, 200)}`);
+        return;
+      } catch (e) {
+        console.error('Resend request error:', (e && e.message) || e);
+        return; // a timeout/network error already cost time — don't retry
+      }
+    }
   };
 
   const saveBalances = async (userId, targetMeta, balances) => {
@@ -308,7 +327,7 @@ export async function handler(event, context) {
         `${user.email} requested a top-up of ${gbp(reqAmount)} on "${b.label}".\n\n`
         + `Comment: ${c || '(none)'}\n\n`
         + `Review it in the admin console:\n${appUrl}`,
-      ).catch(() => {});
+      ).catch((e) => console.error('notifyAdmins:', (e && e.message) || e));
 
       return json(200, { balances: out });
     }
