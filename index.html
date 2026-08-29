@@ -210,6 +210,7 @@
     .msg { color: var(--muted); margin: 0.6rem 0 0; font-size: 0.83rem; min-height: 1.1em; }
     .msg.err { color: var(--err); }
     .msg.ok { color: var(--ok); }
+    #blobcheck-status { word-break: break-all; }
     .gate p { color: var(--muted); margin: 0.5rem 0 0; }
 
     .admin-area {
@@ -463,6 +464,10 @@
             <span>Send mail notifications</span>
           </label>
           <p class="msg" id="notify-status"></p>
+
+          <hr>
+          <button type="button" id="blobcheck-btn">Check history storage</button>
+          <p class="msg" id="blobcheck-status"></p>
         </div>
       </div>
     </section>
@@ -513,6 +518,7 @@
     var adminTabs = $('admin-tabs'), balanceSection = $('balance-section');
     var nameUserSelect = $('name-user-select'), nameInput = $('name-input'), saveNameBtn = $('save-name-btn'), nameStatus = $('name-status');
     var notifyEmailInput = $('notify-email'), notifyEnabledInput = $('notify-enabled'), notifySaveBtn = $('notify-save'), notifyStatus = $('notify-status');
+    var blobcheckBtn = $('blobcheck-btn'), blobcheckStatus = $('blobcheck-status');
     var historyBtn = $('history-btn'), historyModal = $('history-modal'), historyBody = $('history-body');
     var historyTitle = $('history-title'), historyClose = $('history-close');
     var requestBox = $('request-box'), requestPending = $('request-pending'), requestAmount = $('request-amount');
@@ -1263,6 +1269,22 @@
           notifyStatus.className = 'msg err';
         })
         .then(function () { notifySaveBtn.disabled = false; });
+    });
+
+    blobcheckBtn.addEventListener('click', function () {
+      blobcheckBtn.disabled = true;
+      blobcheckStatus.textContent = 'Checking…';
+      blobcheckStatus.className = 'msg';
+      apiJson('/blobcheck')
+        .then(function (r) {
+          blobcheckStatus.textContent = JSON.stringify(r);
+          blobcheckStatus.className = r.ok ? 'msg ok' : 'msg err';
+        })
+        .catch(function (err) {
+          blobcheckStatus.textContent = err.message;
+          blobcheckStatus.className = 'msg err';
+        })
+        .then(function () { blobcheckBtn.disabled = false; });
     });
 
     inviteForm.addEventListener('submit', function (e) {

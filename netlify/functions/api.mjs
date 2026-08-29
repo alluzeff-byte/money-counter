@@ -64,11 +64,10 @@ const histStore = () => {
 };
 const histKey = (userId, balanceId) => `${userId}__${balanceId}`;
 
-const readHist = async (userId, balanceId) => {
-  try {
-    const v = await histStore().get(histKey(userId, balanceId), { type: 'json' });
-    return Array.isArray(v) ? v : [];
-  } catch (e) { console.error('readHist:', e && e.message); return []; }
+// Raw read — throws on store error so callers can surface it.
+const readHistRaw = async (userId, balanceId) => {
+  const v = await histStore().get(histKey(userId, balanceId), { type: 'json' });
+  return Array.isArray(v) ? v : [];
 };
 const appendHist = async (userId, balanceId, entry) => {
   try {
@@ -77,7 +76,8 @@ const appendHist = async (userId, balanceId, entry) => {
     const cur = await s.get(k, { type: 'json' }).catch(() => null);
     const next = (Array.isArray(cur) ? cur : []).concat([entry]).slice(-HIST_CAP);
     await s.setJSON(k, next);
-  } catch (e) { console.error('appendHist:', e && e.message); }
+    return null;
+  } catch (e) { console.error('appendHist:', (e && e.stack) || e); return (e && (e.message || String(e))) || 'blob write failed'; }
 };
 const deleteHist = async (userId, balanceId) => {
   try { await histStore().delete(histKey(userId, balanceId)); } catch (e) { console.error('deleteHist:', e && e.message); }
@@ -268,8 +268,31 @@ export async function handler(event, context) {
       const balanceId = q.balanceId;
       if (!balanceId) return json(400, { error: 'balanceId is required.' });
       if (userId !== user.sub && !admin) return json(403, { error: 'Not allowed.' });
-      const hist = await readHist(userId, balanceId);
-      return json(200, { userId, balanceId, history: hist.slice().reverse() });
+      try {
+        const hist = await readHistRaw(userId, balanceId);
+        return json(200, { userId, balanceId, history: hist.slice().reverse() });
+      } catch (e) {
+        console.error('/history:', (e && e.stack) || e);
+        return json(500, { error: 'History store: ' + ((e && (e.message || String(e))) || 'unavailable') });
+      }
+    }
+
+    // GET /blobcheck — admin diagnostic: write/read/delete round-trip
+    if (route === '/blobcheck' && method === 'GET') {
+      if (!admin) return json(403, { error: 'Admin only.' });
+      const out = { hasToken: !!process.env.NETLIFY_BLOBS_TOKEN, siteID: SITE_ID };
+      try {
+        const s = histStore();
+        await s.setJSON('__diag', { at: nowIso() });
+        out.readBack = await s.get('__diag', { type: 'json' });
+        await s.delete('__diag');
+        out.ok = true;
+      } catch (e) {
+        out.ok = false;
+        out.error = (e && (e.message || String(e))) || 'unknown';
+        out.name = e && e.name;
+      }
+      return json(200, out);
     }
 
     // POST /request { balanceId, amount, comment } — caller asks for a top-up
