@@ -276,6 +276,7 @@
     .hist-amt.plus { color: var(--hist-plus); }
     .hist-amt.minus { color: var(--hist-minus); }
     .hist-bang { color: var(--ok); font-weight: 700; margin-right: 0.3rem; }
+    .c-red { color: var(--err); }
 
     .modal-backdrop {
       position: fixed;
@@ -1102,17 +1103,19 @@
     }
     function quote(v) { return '“' + (v == null ? '' : v) + '”'; }
 
-    // Render comment text: $$…$$ becomes bold, the delimiters are dropped.
+    // Render comment text: $$…$$ becomes bold, %%…%% becomes red; delimiters dropped.
     function fmtComment(str) {
       var frag = document.createDocumentFragment();
       var s = String(str == null ? '' : str);
-      var re = /\$\$([\s\S]+?)\$\$/g;
+      var re = /\$\$([\s\S]+?)\$\$|%%([\s\S]+?)%%/g;
       var last = 0, m;
       while ((m = re.exec(s))) {
         if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
-        var b = document.createElement('b');
-        b.textContent = m[1];
-        frag.appendChild(b);
+        var el, txt;
+        if (m[1] != null) { el = document.createElement('b'); txt = m[1]; }
+        else { el = document.createElement('span'); el.className = 'c-red'; txt = m[2]; }
+        el.textContent = txt;
+        frag.appendChild(el);
         last = re.lastIndex;
       }
       if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
