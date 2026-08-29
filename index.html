@@ -453,13 +453,15 @@
 
           <label class="fld">
             <span>Notification email</span>
-            <input type="email" id="notify-email" autocomplete="off">
+            <span class="row">
+              <input type="email" id="notify-email" autocomplete="off">
+              <button type="button" class="primary" id="notify-save">Save</button>
+            </span>
           </label>
           <label class="chk">
             <input type="checkbox" id="notify-enabled">
             <span>Send mail notifications</span>
           </label>
-          <button type="button" class="primary" id="notify-save">Save</button>
           <p class="msg" id="notify-status"></p>
         </div>
       </div>
