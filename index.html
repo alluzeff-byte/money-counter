@@ -355,9 +355,9 @@
           </div>
 
           <label class="fld" id="balance-editor">
-            <span>Set balance (£) — current: <span id="editing-label">Balance</span></span>
+            <span>Set balance (£) &mdash; <span id="editing-label">Balance</span>. Use <b>+</b>/<b>&minus;</b> to add or subtract.</span>
             <span class="row">
-              <input type="number" id="balance-input" min="0" step="0.01" inputmode="decimal">
+              <input type="text" id="balance-input" inputmode="text" autocomplete="off" placeholder="750, +50 or -30">
               <button type="button" class="primary" id="save-balance-btn">Save</button>
             </span>
           </label>
@@ -854,6 +854,8 @@
       switch (e.type) {
         case 'created': return 'balance created';
         case 'set': return 'balance set: ' + fmt(e.from) + ' → ' + fmt(e.to);
+        case 'adjusted': return 'balance ' + (e.delta >= 0 ? '+' : '−') + fmt(Math.abs(e.delta)) +
+          ': ' + fmt(e.from) + ' → ' + fmt(e.to);
         case 'renamed': return 'renamed: ' + quote(e.from) + ' → ' + quote(e.to);
         case 'topup-requested': return 'top-up requested: ' + fmt(e.amount) + c;
         case 'topup-approved': return 'top-up approved: +' + fmt(e.amount) + c;
@@ -914,22 +916,50 @@
       var u = usersById[userSelect.value];
       var b = currentBalances[balanceIdx];
       if (!u || !b) { adminStatus.textContent = 'Select a user first.'; adminStatus.className = 'msg err'; return; }
-      var n = Number(balanceInput.value);
-      if (!isFinite(n) || n < 0) {
-        adminStatus.textContent = 'Enter a number of 0 or more.';
+
+      var raw = (balanceInput.value || '').trim().replace(/\s+/g, '');
+      var isDelta = /^[+\-]/.test(raw);
+      var n = Number(raw);
+      if (raw === '' || !isFinite(n)) {
+        adminStatus.textContent = 'Enter a number, or +/− an amount.';
         adminStatus.className = 'msg err';
         return;
       }
+      if (!isDelta && n < 0) {
+        adminStatus.textContent = 'A plain balance cannot be negative (use −N to subtract).';
+        adminStatus.className = 'msg err';
+        return;
+      }
+      var projected = Math.round((isDelta ? b.amount + n : n) * 100) / 100;
+      if (projected < 0) {
+        adminStatus.textContent = 'That would make “' + b.label + '” negative (' + fmt(projected) + ').';
+        adminStatus.className = 'msg err';
+        return;
+      }
+
+      var msg = isDelta
+        ? (n >= 0 ? 'Add ' : 'Subtract ') + fmt(Math.abs(n)) + ' ' + (n >= 0 ? 'to' : 'from') +
+          ' “' + b.label + '” for ' + u.name + '?\n\n' + fmt(b.amount) + ' → ' + fmt(projected)
+        : 'Set “' + b.label + '” for ' + u.name + ' to ' + fmt(projected) + '?\n\n' +
+          'Current: ' + fmt(b.amount);
+      if (!window.confirm(msg)) {
+        adminStatus.textContent = 'Cancelled.';
+        adminStatus.className = 'msg';
+        return;
+      }
+
       saveBtn.disabled = true;
       adminStatus.textContent = 'Saving…';
       adminStatus.className = 'msg';
-      apiJson('/balance', jsonReq({ userId: u.id, balanceId: b.id, amount: n }, 'PUT'))
+      apiJson('/balance', jsonReq(
+        { userId: u.id, balanceId: b.id, amount: n, mode: isDelta ? 'delta' : 'set' }, 'PUT'
+      ))
         .then(function (res) {
           u.balances = res.balances;
           currentBalances = res.balances;
           showBalanceAt(balanceIdx);
           var cur = currentBalances[balanceIdx];
-          adminStatus.textContent = 'Saved ' + fmt(cur.amount) + ' to “' + cur.label + '” for ' + u.name + '.';
+          adminStatus.textContent = 'Saved — “' + cur.label + '” is now ' + fmt(cur.amount) + ' for ' + u.name + '.';
           adminStatus.className = 'msg ok';
         })
         .catch(function (err) {

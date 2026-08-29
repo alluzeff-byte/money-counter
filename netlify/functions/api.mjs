@@ -234,21 +234,30 @@ export async function handler(event, context) {
       return json(200, { userId, balances: out });
     }
 
-    // PUT /balance { userId, balanceId, amount } — set one balance's amount
+    // PUT /balance { userId, balanceId, amount, mode } — set (absolute) or
+    // adjust (mode: "delta", amount may be negative) one balance's amount
     if (route === '/balance' && method === 'PUT') {
-      const { userId, balanceId, amount } = readBody(event);
+      const { userId, balanceId, amount, mode } = readBody(event);
       const n = Number(amount);
-      if (!isFinite(n) || n < 0) return json(400, { error: 'amount must be a number >= 0.' });
-      const rounded = money(n);
+      if (!isFinite(n)) return json(400, { error: 'amount must be a number.' });
+      const delta = mode === 'delta';
+      if (!delta && n < 0) return json(400, { error: 'amount must be >= 0.' });
 
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
       const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
-      if (b.amount !== rounded) {
+
+      const raw = delta ? b.amount + n : n;
+      const next = Math.round(raw * 100) / 100;
+      if (next < 0) return json(400, { error: 'That change would make the balance negative.' });
+
+      if (b.amount !== next) {
         const prev = b.amount;
-        b.amount = rounded;
-        pushBalHist(b, { at: nowIso(), by: user.email, type: 'set', from: prev, to: rounded });
+        b.amount = next;
+        pushBalHist(b, delta
+          ? { at: nowIso(), by: user.email, type: 'adjusted', delta: Math.round(n * 100) / 100, from: prev, to: next }
+          : { at: nowIso(), by: user.email, type: 'set', from: prev, to: next });
       }
       const out = await saveBalances(userId, target.app_metadata, balances);
       return json(200, { userId, balances: out });
