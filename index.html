@@ -92,12 +92,13 @@
       cursor: pointer;
     }
     .edge-btn:hover { color: var(--text); border-color: var(--accent); }
-    .amount-row { display: flex; align-items: center; justify-content: center; gap: 1.75rem; }
-    .amount-row .amount { flex: 0 0 auto; }
+    .amount-row { display: flex; align-items: center; justify-content: space-between; }
+    .amount-row .amount { flex: 1 1 auto; text-align: center; min-width: 0; }
     .bal-nav {
       flex: 0 0 auto;
+      width: 1.9rem;             /* line up under the − / + edge buttons */
       border: none; background: none; cursor: pointer;
-      font-size: 2.25rem; line-height: 1; color: var(--muted);
+      font-size: 2rem; line-height: 1; color: var(--muted);
       padding: 0;
     }
     .bal-nav:hover { color: var(--text); }
