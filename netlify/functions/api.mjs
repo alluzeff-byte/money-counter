@@ -99,19 +99,25 @@ const migrateEmbeddedHistory = async (userId, meta) => {
 
 // ---- balance normalisation --------------------------------------------
 
+const normRequest = (r, i) => ({
+  id: String((r && r.id) || `r${i}`),
+  amount: money(r && r.amount),
+  comment: cleanComment(r && r.comment),
+  at: (r && r.at) || null,
+  by: (r && r.by) || null,
+});
+
 const normBalance = (b, i) => {
-  const req = b && b.request && typeof b.request === 'object' ? b.request : null;
+  // Accept the legacy single `request` object or the `requests` array.
+  let requests = [];
+  if (Array.isArray(b && b.requests)) requests = b.requests;
+  else if (b && b.request && typeof b.request === 'object') requests = [b.request];
   return {
     id: String((b && b.id) || i),
     label: cleanLabel(b && b.label),
     amount: money(b && b.amount),
     archived: !!(b && b.archived),
-    request: req ? {
-      amount: money(req.amount),
-      comment: cleanComment(req.comment),
-      at: req.at || null,
-      by: req.by || null,
-    } : null,
+    requests: requests.slice(0, 25).map(normRequest),
   };
 };
 
@@ -308,12 +314,13 @@ export async function handler(event, context) {
       if (!b) return json(404, { error: 'Balance not found.' });
 
       const c = cleanComment(comment);
-      b.request = { amount: money(n), comment: c, at: nowIso(), by: user.email };
+      const reqAmount = money(n);
+      b.requests = [...b.requests, { id: randomUUID(), amount: reqAmount, comment: c, at: nowIso(), by: user.email }].slice(-25);
       const out = await saveBalances(user.sub, target.app_metadata, balances);
 
       await notifyAdmins(
-        `Top-up request: ${gbp(b.request.amount)} on "${b.label}"`,
-        `${user.email} requested a top-up of ${gbp(b.request.amount)} on "${b.label}".\n\n`
+        `Top-up request: ${gbp(reqAmount)} on "${b.label}"`,
+        `${user.email} requested a top-up of ${gbp(reqAmount)} on "${b.label}".\n\n`
         + `Comment: ${c || '(none)'}\n\nReview it in the admin console.`,
       ).catch(() => {});
 
@@ -376,7 +383,7 @@ export async function handler(event, context) {
       const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
       let changed = false;
-      if (!b.archived) { b.archived = true; b.request = null; changed = true; }
+      if (!b.archived) { b.archived = true; b.requests = []; changed = true; }
       const out = await saveBalances(userId, target.app_metadata, balances);
       if (changed) await appendHist(userId, b.id, { at: nowIso(), by: user.email, type: 'archived' });
       return json(200, { userId, balances: out });
@@ -458,19 +465,27 @@ export async function handler(event, context) {
       return json(200, { userId, balances: out });
     }
 
-    // POST /approve { userId, balanceId, comment }
+    // Pull one pending request out of a balance by id (or the first if no id).
+    const takeRequest = (b, requestId) => {
+      const idx = requestId != null
+        ? b.requests.findIndex((r) => r.id === String(requestId))
+        : (b.requests.length ? 0 : -1);
+      if (idx === -1) return null;
+      return b.requests.splice(idx, 1)[0];
+    };
+
+    // POST /approve { userId, balanceId, requestId, comment }
     if (route === '/approve' && method === 'POST') {
-      const { userId, balanceId, comment } = readBody(event);
+      const { userId, balanceId, requestId, comment } = readBody(event);
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
       const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
-      if (!b.request) return json(400, { error: 'No pending request for this balance.' });
+      const req = takeRequest(b, requestId);
+      if (!req) return json(400, { error: 'That request is no longer pending.' });
 
-      const req = b.request;
       const c = comment == null ? req.comment : cleanComment(comment);
       b.amount = money(b.amount + req.amount);
-      b.request = null;
       const out = await saveBalances(userId, target.app_metadata, balances);
       await appendHist(userId, b.id, {
         at: nowIso(), by: user.email, type: 'topup-approved',
@@ -479,18 +494,17 @@ export async function handler(event, context) {
       return json(200, { userId, balances: out });
     }
 
-    // POST /reject { userId, balanceId, comment }
+    // POST /reject { userId, balanceId, requestId, comment }
     if (route === '/reject' && method === 'POST') {
-      const { userId, balanceId, comment } = readBody(event);
+      const { userId, balanceId, requestId, comment } = readBody(event);
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
       const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
-      if (!b.request) return json(400, { error: 'No pending request for this balance.' });
+      const req = takeRequest(b, requestId);
+      if (!req) return json(400, { error: 'That request is no longer pending.' });
 
-      const req = b.request;
       const c = comment == null ? req.comment : cleanComment(comment);
-      b.request = null;
       const out = await saveBalances(userId, target.app_metadata, balances);
       await appendHist(userId, b.id, {
         at: nowIso(), by: user.email, type: 'topup-rejected',

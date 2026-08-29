@@ -127,7 +127,16 @@
     .box-title {
       font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.08em; color: var(--muted);
+      display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
     }
+    .req-pager { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .req-nav {
+      border: none; background: none; cursor: pointer;
+      font-size: 1.2rem; line-height: 1; color: var(--muted); padding: 0 0.15rem;
+    }
+    .req-nav:hover { color: var(--text); }
+    .req-nav[disabled] { opacity: 0.3; cursor: default; }
+    #review-count { font-size: 0.75rem; }
     .note { font-size: 0.82rem; color: var(--muted); margin: 0; }
     .chk { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; margin-bottom: 0.75rem; cursor: pointer; }
     .chk input { width: auto; }
@@ -395,7 +404,14 @@
           </label>
 
           <div id="review-box" class="panel-box hidden">
-            <span class="box-title">Pending top-up request</span>
+            <span class="box-title">
+              <span>Pending top-up request</span>
+              <span class="req-pager hidden" id="req-pager">
+                <button type="button" class="req-nav" id="req-prev" aria-label="Previous request">&#8249;</button>
+                <span id="review-count"></span>
+                <button type="button" class="req-nav" id="req-next" aria-label="Next request">&#8250;</button>
+              </span>
+            </span>
             <p id="review-summary" class="note"></p>
             <textarea id="review-comment" rows="2" maxlength="500" placeholder="Comment"></textarea>
             <div class="btn-row">
@@ -525,6 +541,7 @@
     var requestComment = $('request-comment'), requestSubmit = $('request-submit'), requestStatus = $('request-status');
     var reviewBox = $('review-box'), reviewSummary = $('review-summary'), reviewComment = $('review-comment');
     var reviewApprove = $('review-approve'), reviewReject = $('review-reject'), reviewStatus = $('review-status');
+    var reqPager = $('req-pager'), reqPrev = $('req-prev'), reqNext = $('req-next'), reviewCount = $('review-count');
     var tabButtons = document.querySelectorAll('.tab'), tabPanels = { users: $('panel-users'), config: $('panel-config') };
 
     function selectTab(name) {
@@ -686,6 +703,7 @@
       balNext.classList.toggle('invisible', balanceIdx >= list.length - 1);
       historyBtn.classList.remove('hidden');
       balanceInput.value = ''; // this field is an amount to add/subtract, not the balance
+      reqIdx = 0;
       renderRequestUI(b);
       applyBalanceControls();
     }
@@ -710,29 +728,47 @@
       if (balView === 'archived') reviewBox.classList.add('hidden');
     }
 
-    // Show the pending top-up: a review box for the admin, a status line for
-    // the balance owner.
+    // Show pending top-ups: a paged review box for the admin, a status line
+    // for the balance owner. `reqIdx` is which request the admin is viewing.
+    var reqIdx = 0;
     function renderRequestUI(b) {
-      var req = b && b.request;
+      var reqs = (b && b.requests) || [];
       if (amAdmin) {
-        if (req) {
-          reviewSummary.textContent = fmt(req.amount) + ' requested by ' + (req.by || 'user')
-            + (req.at ? ' · ' + fmtWhen(req.at) : '');
-          reviewComment.value = req.comment || '';
+        if (reqs.length) {
+          reqIdx = Math.max(0, Math.min(reqIdx, reqs.length - 1));
+          var r = reqs[reqIdx];
+          reviewSummary.textContent = fmt(r.amount) + ' requested by ' + (r.by || 'user')
+            + (r.at ? ' · ' + fmtWhen(r.at) : '');
+          reviewComment.value = r.comment || '';
           reviewStatus.textContent = '';
           reviewStatus.className = 'msg';
+          var many = reqs.length > 1;
+          reqPager.classList.toggle('hidden', !many);
+          reviewCount.textContent = many ? (reqIdx + 1) + ' / ' + reqs.length : '';
+          reqPrev.disabled = reqIdx <= 0;
+          reqNext.disabled = reqIdx >= reqs.length - 1;
           reviewBox.classList.remove('hidden');
         } else {
           reviewBox.classList.add('hidden');
         }
-      } else if (req) {
-        requestPending.textContent = 'Pending: ' + fmt(req.amount) + ' awaiting approval'
-          + (req.at ? ' (since ' + fmtWhen(req.at) + ')' : '');
+      } else if (reqs.length) {
+        var total = reqs.reduce(function (s, x) { return s + (Number(x.amount) || 0); }, 0);
+        requestPending.textContent = reqs.length === 1
+          ? 'Pending: ' + fmt(reqs[0].amount) + ' awaiting approval'
+          : reqs.length + ' requests pending · ' + fmt(total) + ' total, awaiting approval';
         requestPending.classList.remove('hidden');
       } else {
         requestPending.classList.add('hidden');
       }
     }
+
+    reqPrev.addEventListener('click', function () {
+      if (reqIdx > 0) { reqIdx--; renderRequestUI(curBal()); }
+    });
+    reqNext.addEventListener('click', function () {
+      var n = ((curBal() || {}).requests || []).length;
+      if (reqIdx < n - 1) { reqIdx++; renderRequestUI(curBal()); }
+    });
 
     balPrev.addEventListener('click', function () { showBalanceAt(balanceIdx - 1); });
     balNext.addEventListener('click', function () { showBalanceAt(balanceIdx + 1); });
@@ -768,15 +804,16 @@
     function reviewAction(path, verb) {
       var u = usersById[userSelect.value];
       var b = curBal();
-      if (!u || !b) return;
+      var r = ((b && b.requests) || [])[reqIdx];
+      if (!u || !b || !r) return;
       reviewApprove.disabled = reviewReject.disabled = true;
       reviewStatus.textContent = 'Working…';
       reviewStatus.className = 'msg';
-      apiJson(path, jsonReq({ userId: u.id, balanceId: b.id, comment: reviewComment.value }, 'POST'))
+      apiJson(path, jsonReq({ userId: u.id, balanceId: b.id, requestId: r.id, comment: reviewComment.value }, 'POST'))
         .then(function (res) {
           u.balances = res.balances;
           allBalances = res.balances;
-          showBalanceAt(balanceIdx);
+          showBalanceAt(balanceIdx); // resets to the first remaining request
           adminStatus.textContent = verb + ' — balance ' + (path === '/approve' ? 'topped up.' : 'unchanged.');
           adminStatus.className = 'msg ok';
         })
