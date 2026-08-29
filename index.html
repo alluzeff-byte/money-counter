@@ -164,11 +164,64 @@
     .row input { flex: 1; }
     .row button { white-space: nowrap; }
     .admin-area hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
-    .history { margin-top: 0.75rem; font-size: 0.8rem; }
+    .history { font-size: 0.8rem; }
     .history ul { list-style: none; margin: 0; padding: 0; }
-    .history li { padding: 0.45rem 0; border-top: 1px solid var(--border); color: var(--muted); }
+    .history li { padding: 0.55rem 0; border-top: 1px solid var(--border); color: var(--muted); }
     .history li:first-child { border-top: none; }
     .history .empty { color: var(--muted); margin: 0; }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .modal {
+      background: var(--card);
+      color: var(--text);
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      width: 100%;
+      max-width: 440px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      text-align: left;
+    }
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-head h2 {
+      margin: 0;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .modal-close {
+      border: none;
+      background: none;
+      font-size: 1.5rem;
+      line-height: 1;
+      color: var(--muted);
+      padding: 0 0.25rem;
+      cursor: pointer;
+    }
+    .modal-body {
+      padding: 0.75rem 1.25rem 1.25rem;
+      overflow-y: auto;
+    }
     .hidden { display: none !important; }
   </style>
 </head>
@@ -228,7 +281,6 @@
           <p class="msg" id="admin-status"></p>
 
           <button type="button" id="history-btn" class="hidden">History</button>
-          <div class="history hidden" id="history-panel"></div>
 
           <p class="msg hidden" id="no-users-msg">No users yet. Invite someone from the Config tab.</p>
         </div>
@@ -262,6 +314,16 @@
     </section>
   </main>
 
+  <div class="modal-backdrop hidden" id="history-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+      <div class="modal-head">
+        <h2 id="history-title">History</h2>
+        <button type="button" class="modal-close" id="history-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body history" id="history-body"></div>
+    </div>
+  </div>
+
   <script>
   (function () {
     var fmt = function (n) {
@@ -282,7 +344,8 @@
     var userPicker = $('user-picker'), balanceEditor = $('balance-editor'), noUsersMsg = $('no-users-msg');
     var adminTabs = $('admin-tabs'), balanceSection = $('balance-section');
     var nameUserSelect = $('name-user-select'), nameInput = $('name-input'), saveNameBtn = $('save-name-btn'), nameStatus = $('name-status');
-    var historyBtn = $('history-btn'), historyPanel = $('history-panel');
+    var historyBtn = $('history-btn'), historyModal = $('history-modal'), historyBody = $('history-body');
+    var historyTitle = $('history-title'), historyClose = $('history-close');
     var tabButtons = document.querySelectorAll('.tab'), tabPanels = { users: $('panel-users'), config: $('panel-config') };
 
     function selectTab(name) {
@@ -456,7 +519,7 @@
           onUserSelect();
         } else {
           setBalanceView('', '—');
-          historyPanel.classList.add('hidden');
+          closeHistory();
         }
 
         // --- Config tab: name dropdown lists everyone by email, incl. admins ---
@@ -481,9 +544,8 @@
       balanceInput.value = u.balance;
       adminStatus.textContent = '';
       adminStatus.className = 'msg';
-      // Collapse any open history from the previous user.
-      historyPanel.classList.add('hidden');
-      historyPanel.innerHTML = '';
+      // Close any history window open for the previous user.
+      closeHistory();
     }
 
     function fmtWhen(iso) {
@@ -498,7 +560,7 @@
     }
     function renderHistory(entries) {
       if (!entries || !entries.length) {
-        historyPanel.innerHTML = '<p class="empty">No changes recorded yet.</p>';
+        historyBody.innerHTML = '<p class="empty">No changes recorded yet.</p>';
         return;
       }
       var ul = document.createElement('ul');
@@ -510,24 +572,31 @@
         li.textContent = fmtWhen(e.at) + ' · ' + what + ' · by ' + e.by;
         ul.appendChild(li);
       });
-      historyPanel.innerHTML = '';
-      historyPanel.appendChild(ul);
+      historyBody.innerHTML = '';
+      historyBody.appendChild(ul);
     }
 
-    historyBtn.addEventListener('click', function () {
+    function closeHistory() { historyModal.classList.add('hidden'); }
+    function openHistory() {
       var u = usersById[userSelect.value];
       if (!u) return;
-      if (!historyPanel.classList.contains('hidden')) {
-        historyPanel.classList.add('hidden');
-        return;
-      }
-      historyPanel.classList.remove('hidden');
-      historyPanel.innerHTML = '<p class="empty">Loading…</p>';
+      historyTitle.textContent = 'History — ' + u.name;
+      historyBody.innerHTML = '<p class="empty">Loading…</p>';
+      historyModal.classList.remove('hidden');
       apiJson('/history?userId=' + encodeURIComponent(u.id))
         .then(function (res) { renderHistory(res.history); })
         .catch(function (err) {
-          historyPanel.innerHTML = '<p class="empty">' + (err.message || 'Could not load history.') + '</p>';
+          historyBody.innerHTML = '<p class="empty">' + (err.message || 'Could not load history.') + '</p>';
         });
+    }
+
+    historyBtn.addEventListener('click', openHistory);
+    historyClose.addEventListener('click', closeHistory);
+    historyModal.addEventListener('click', function (e) {
+      if (e.target === historyModal) closeHistory();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !historyModal.classList.contains('hidden')) closeHistory();
     });
 
     function onNameUserSelect() {
