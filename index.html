@@ -196,7 +196,21 @@
         }
       });
       logoutBtn.addEventListener('click', function () {
-        if (widgetReady) window.netlifyIdentity.logout();
+        if (!widgetReady) return;
+        var done = false;
+        function finish() {
+          if (done) return;
+          done = true;
+          try { window.localStorage.removeItem('gotrue.user'); } catch (e) {}
+          render(null);
+        }
+        try {
+          var r = window.netlifyIdentity.logout();
+          if (r && typeof r.then === 'function') { r.then(finish, finish); }
+        } catch (e) { /* ignore */ }
+        // Belt-and-braces: the widget's logout event/promise sometimes never
+        // resolves (stale token). Reset the UI and drop the local token anyway.
+        setTimeout(finish, 600);
       });
 
       function showAuthError() {
