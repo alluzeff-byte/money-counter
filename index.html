@@ -14,6 +14,8 @@
       --muted: #6b7280;
       --accent: #0b6e4f;
       --border: #e2e6ea;
+      --hist-plus: #d64545;
+      --hist-minus: #3454d1;
       --field: #ffffff;
       --err: #c0392b;
       --ok: #0b6e4f;
@@ -28,6 +30,8 @@
         --muted: #9aa3b2;
         --accent: #35d0a0;
         --border: #2c303c;
+        --hist-plus: #ff7a7a;
+        --hist-minus: #7d97ff;
         --field: #12141c;
         --err: #ff6b6b;
         --ok: #35d0a0;
@@ -250,6 +254,9 @@
     .history li { padding: 0.55rem 0; border-top: 1px solid var(--border); color: var(--muted); }
     .history li:first-child { border-top: none; }
     .history .empty { color: var(--muted); margin: 0; }
+    .hist-amt { font-weight: 700; }
+    .hist-amt.plus { color: var(--hist-plus); }
+    .hist-amt.minus { color: var(--hist-minus); }
 
     .modal-backdrop {
       position: fixed;
@@ -975,19 +982,30 @@
       });
     }
     function quote(v) { return '“' + (v == null ? '' : v) + '”'; }
-    function historyText(e) {
+
+    // { amt: {text, cls} | null, desc: string, total: number | null }
+    function histParts(e) {
       var c = e.comment ? ' — ' + quote(e.comment) : '';
       switch (e.type) {
-        case 'created': return 'balance created';
-        case 'set': return 'balance set: ' + fmt(e.from) + ' → ' + fmt(e.to);
-        case 'adjusted': return 'balance ' + (e.delta >= 0 ? '+' : '−') + fmt(Math.abs(e.delta)) +
-          ': ' + fmt(e.from) + ' → ' + fmt(e.to);
-        case 'renamed': return 'renamed: ' + quote(e.from) + ' → ' + quote(e.to);
-        case 'archived': return 'moved to Archived';
-        case 'topup-requested': return 'top-up requested: ' + fmt(e.amount) + c;
-        case 'topup-approved': return 'top-up approved: +' + fmt(e.amount) + c;
-        case 'topup-rejected': return 'top-up rejected: ' + fmt(e.amount) + c;
-        default: return e.type || 'change';
+        case 'created': return { desc: 'balance created' };
+        case 'renamed': return { desc: 'renamed: ' + quote(e.from) + ' → ' + quote(e.to) };
+        case 'archived': return { desc: 'moved to Archived' };
+        case 'set': return { desc: 'balance set: ' + fmt(e.from) + ' → ' + fmt(e.to) };
+        case 'adjusted': {
+          var d = Number(e.delta) || 0;
+          return {
+            amt: { text: (d >= 0 ? '+' : '−') + fmt(Math.abs(d)), cls: d >= 0 ? 'plus' : 'minus' },
+            desc: 'balance adjusted',
+            total: typeof e.to === 'number' ? e.to : null,
+          };
+        }
+        case 'topup-approved': return {
+          amt: { text: '+' + fmt(e.amount), cls: 'plus' },
+          desc: 'top-up approved' + c,
+          total: typeof e.total === 'number' ? e.total : null,
+        };
+        case 'topup-rejected': return { desc: 'top-up rejected: ' + fmt(e.amount) + c };
+        default: return { desc: e.type || 'change' };
       }
     }
     function renderHistory(entries) {
@@ -997,8 +1015,19 @@
       }
       var ul = document.createElement('ul');
       entries.forEach(function (e) {
+        var p = histParts(e);
         var li = document.createElement('li');
-        li.textContent = fmtWhen(e.at) + ' · ' + historyText(e) + ' · by ' + (e.by || '?');
+        if (p.amt) {
+          var span = document.createElement('span');
+          span.className = 'hist-amt ' + p.amt.cls;
+          span.textContent = p.amt.text;
+          li.appendChild(span);
+          li.appendChild(document.createTextNode(' · '));
+        }
+        var rest = p.desc;
+        if (p.total != null) rest += ' · total ' + fmt(p.total);
+        rest += ' · ' + fmtWhen(e.at) + ' · by ' + (e.by || '?');
+        li.appendChild(document.createTextNode(rest));
         ul.appendChild(li);
       });
       historyBody.innerHTML = '';

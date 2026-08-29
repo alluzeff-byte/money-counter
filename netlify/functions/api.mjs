@@ -216,8 +216,8 @@ export async function handler(event, context) {
       if (!b) return json(404, { error: 'Balance not found.' });
 
       const c = cleanComment(comment);
+      // A request is not a history event — only its approval/rejection is.
       b.request = { amount: money(n), comment: c, at: nowIso(), by: user.email };
-      pushBalHist(b, { at: b.request.at, by: user.email, type: 'topup-requested', amount: b.request.amount, comment: c });
       const out = await saveBalances(user.sub, target.app_metadata, balances);
 
       // Best-effort email notification to subscribed admins.
@@ -368,7 +368,7 @@ export async function handler(event, context) {
       b.amount = money(b.amount + req.amount);
       pushBalHist(b, {
         at: nowIso(), by: user.email, type: 'topup-approved',
-        amount: req.amount, comment: c, requestedBy: req.by,
+        amount: req.amount, comment: c, requestedBy: req.by, total: b.amount,
       });
       b.request = null;
       const out = await saveBalances(userId, target.app_metadata, balances);
