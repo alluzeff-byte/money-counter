@@ -417,9 +417,9 @@ export async function handler(event, context) {
       return json(200, { userId, balances: out });
     }
 
-    // PUT /balance { userId, balanceId, amount, mode }
+    // PUT /balance { userId, balanceId, amount, mode, comment }
     if (route === '/balance' && method === 'PUT') {
-      const { userId, balanceId, amount, mode } = readBody(event);
+      const { userId, balanceId, amount, mode, comment } = readBody(event);
       const n = Number(amount);
       if (!isFinite(n)) return json(400, { error: 'amount must be a number.' });
       const delta = mode === 'delta';
@@ -437,9 +437,10 @@ export async function handler(event, context) {
       if (b.amount !== next) {
         const prev = b.amount;
         b.amount = next;
+        const c = cleanComment(comment) || undefined;
         entry = delta
-          ? { at: nowIso(), by: user.email, type: 'adjusted', delta: Math.round(n * 100) / 100, from: prev, to: next }
-          : { at: nowIso(), by: user.email, type: 'set', from: prev, to: next };
+          ? { at: nowIso(), by: user.email, type: 'adjusted', delta: Math.round(n * 100) / 100, from: prev, to: next, comment: c }
+          : { at: nowIso(), by: user.email, type: 'set', from: prev, to: next, comment: c };
       }
       const out = await saveBalances(userId, target.app_metadata, balances);
       if (entry) await appendHist(userId, b.id, entry);

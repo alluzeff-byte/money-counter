@@ -257,6 +257,10 @@
     .row { display: flex; gap: 0.5rem; }
     #balance-editor { margin-bottom: 1rem; }
     #balance-editor .row { align-items: center; }
+    #balance-editor textarea { margin-top: 0.5rem; }
+    .pending-list { list-style: none; margin: 0 0 0.25rem; padding: 0; font-size: 0.82rem; color: var(--muted); }
+    .pending-list li { padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
+    .pending-list li:last-child { border-bottom: none; }
     #balance-input { flex: 0 0 50%; min-width: 0; }
     #balance-editor button { flex: 0 0 auto; }
     .row input { flex: 1; }
@@ -270,6 +274,7 @@
     .hist-amt { font-weight: 700; }
     .hist-amt.plus { color: var(--hist-plus); }
     .hist-amt.minus { color: var(--hist-minus); }
+    .hist-bang { color: var(--ok); font-weight: 700; margin-right: 0.3rem; }
 
     .modal-backdrop {
       position: fixed;
@@ -388,7 +393,7 @@
 
         <div id="request-box" class="panel-box hidden">
           <span class="box-title">Request a top-up</span>
-          <p id="request-pending" class="note hidden"></p>
+          <ul id="request-pending" class="pending-list hidden"></ul>
           <input type="number" id="request-amount" min="0" step="0.01" inputmode="decimal" placeholder="Amount to add (£)">
           <textarea id="request-comment" rows="2" maxlength="500" placeholder="Comments"></textarea>
           <button type="button" class="primary" id="request-submit">Submit</button>
@@ -421,13 +426,14 @@
             <p class="msg" id="review-status"></p>
           </div>
 
-          <label class="fld" id="balance-editor">
+          <div class="fld" id="balance-editor">
             <span>Change balance</span>
             <div class="row">
               <input type="text" id="balance-input" inputmode="text" autocomplete="off" placeholder="20  or  -30">
               <button type="button" class="primary" id="save-balance-btn">Add</button>
             </div>
-          </label>
+            <textarea id="adjust-comment" rows="2" maxlength="500" placeholder="Comments (optional)"></textarea>
+          </div>
 
           <label class="fld" id="bal-view-picker">
             <span>Show</span>
@@ -525,7 +531,7 @@
     var gateMsg = $('gate-msg'), gateError = $('gate-error'), gateNote = $('gate-note');
     var loginForm = $('login-form'), emailInput = $('email'), pwInput = $('password');
     var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), logoutBtn = $('logout-btn');
-    var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn');
+    var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn'), adjustComment = $('adjust-comment');
     var balPrev = $('bal-prev'), balNext = $('bal-next');
     var balPlus = $('bal-plus'), balMinus = $('bal-minus'), noBalanceMsg = $('no-balance-msg');
     var balViewPicker = $('bal-view-picker'), balViewSelect = $('bal-view-select');
@@ -703,6 +709,7 @@
       balNext.classList.toggle('invisible', balanceIdx >= list.length - 1);
       historyBtn.classList.remove('hidden');
       balanceInput.value = ''; // this field is an amount to add/subtract, not the balance
+      adjustComment.value = '';
       reqIdx = 0;
       renderRequestUI(b);
       applyBalanceControls();
@@ -752,12 +759,18 @@
           reviewBox.classList.add('hidden');
         }
       } else if (reqs.length) {
-        var total = reqs.reduce(function (s, x) { return s + (Number(x.amount) || 0); }, 0);
-        requestPending.textContent = reqs.length === 1
-          ? 'Pending: ' + fmt(reqs[0].amount) + ' awaiting approval'
-          : reqs.length + ' requests pending · ' + fmt(total) + ' total, awaiting approval';
+        requestPending.innerHTML = '';
+        reqs.forEach(function (r) {
+          var li = document.createElement('li');
+          li.textContent = fmt(r.amount)
+            + (r.comment ? ' — “' + r.comment + '”' : '')
+            + (r.at ? ' · ' + fmtWhen(r.at) : '')
+            + ' · awaiting approval';
+          requestPending.appendChild(li);
+        });
         requestPending.classList.remove('hidden');
       } else {
+        requestPending.innerHTML = '';
         requestPending.classList.add('hidden');
       }
     }
@@ -1096,12 +1109,12 @@
         case 'renamed': return { desc: 'renamed: ' + quote(e.from) + ' → ' + quote(e.to) };
         case 'archived': return { desc: 'moved to Archived' };
         case 'restored': return { desc: 'restored to Actual' };
-        case 'set': return { desc: 'balance set: ' + fmt(e.from) + ' → ' + fmt(e.to) };
+        case 'set': return { desc: 'balance set: ' + fmt(e.from) + ' → ' + fmt(e.to) + c };
         case 'adjusted': {
           var d = Number(e.delta) || 0;
           return {
             amt: { text: (d >= 0 ? '+' : '−') + fmt(Math.abs(d)), cls: d >= 0 ? 'plus' : 'minus' },
-            desc: 'balance adjusted',
+            desc: 'balance adjusted' + c,
             total: typeof e.to === 'number' ? e.to : null,
           };
         }
@@ -1119,10 +1132,18 @@
         historyBody.innerHTML = '<p class="empty">No changes recorded yet.</p>';
         return;
       }
+      // Entry types that actually move money — the rest get a green "!".
+      var MONEY = { adjusted: 1, set: 1, 'topup-approved': 1 };
       var ul = document.createElement('ul');
       entries.forEach(function (e) {
         var p = histParts(e);
         var li = document.createElement('li');
+        if (!MONEY[e.type]) {
+          var bang = document.createElement('span');
+          bang.className = 'hist-bang';
+          bang.textContent = '!';
+          li.appendChild(bang);
+        }
         if (p.amt) {
           var span = document.createElement('span');
           span.className = 'hist-amt ' + p.amt.cls;
@@ -1245,11 +1266,12 @@
         adminStatus.textContent = 'Working…';
         adminStatus.className = 'msg';
         apiJson('/balance', jsonReq(
-          { userId: u.id, balanceId: b.id, amount: n, mode: 'delta' }, 'PUT'
+          { userId: u.id, balanceId: b.id, amount: n, mode: 'delta', comment: adjustComment.value }, 'PUT'
         ))
           .then(function (res) {
             u.balances = res.balances;
             allBalances = res.balances;
+            adjustComment.value = '';
             showBalanceAt(balanceIdx);
             var cur = curBal();
             adminStatus.textContent = (n >= 0 ? 'Added ' : 'Subtracted ') + fmt(Math.abs(n))
