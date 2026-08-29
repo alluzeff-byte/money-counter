@@ -277,6 +277,9 @@
     .hist-bang { color: var(--ok); font-weight: 700; margin-right: 0.3rem; }
     .c-red { color: var(--err); }
     .c-green { color: var(--ok); }
+    .c-blue { color: var(--hist-minus); }
+    .modal-head-actions { display: inline-flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+    .modal-head-actions .linkish { margin: 0; }
 
     .modal-backdrop {
       position: fixed;
@@ -497,7 +500,10 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
       <div class="modal-head">
         <h2 id="history-title">History</h2>
-        <button type="button" class="modal-close" id="history-close" aria-label="Close">&times;</button>
+        <span class="modal-head-actions">
+          <button type="button" class="linkish hidden" id="history-export">Export</button>
+          <button type="button" class="modal-close" id="history-close" aria-label="Close">&times;</button>
+        </span>
       </div>
       <div class="modal-body history" id="history-body"></div>
     </div>
@@ -539,7 +545,7 @@
     var nameUserSelect = $('name-user-select'), nameInput = $('name-input'), saveNameBtn = $('save-name-btn'), nameStatus = $('name-status');
     var notifyEmailInput = $('notify-email'), notifyEnabledInput = $('notify-enabled'), notifySaveBtn = $('notify-save'), notifyStatus = $('notify-status');
     var historyBtn = $('history-btn'), historyModal = $('history-modal'), historyBody = $('history-body');
-    var historyTitle = $('history-title'), historyClose = $('history-close');
+    var historyTitle = $('history-title'), historyClose = $('history-close'), historyExport = $('history-export');
     var requestBox = $('request-box'), requestPending = $('request-pending'), requestAmount = $('request-amount');
     var requestComment = $('request-comment'), requestSubmit = $('request-submit'), requestStatus = $('request-status');
     var reviewBox = $('review-box'), reviewSummary = $('review-summary'), reviewComment = $('review-comment');
@@ -1105,21 +1111,24 @@
     }
     function quote(v) { return '“' + (v == null ? '' : v) + '”'; }
 
-    // Render comment text: $$…$$ bold, %%…%% red, ^^…^^ green; delimiters dropped.
+    // Comment markup delimiters (also used to strip for export).
+    var COMMENT_RE = /\$\$([\s\S]+?)\$\$|%%([\s\S]+?)%%|\^\^([\s\S]+?)\^\^|&&([\s\S]+?)&&/g;
+    // Render comment text: $$…$$ bold, %%…%% red, ^^…^^ green, &&…&& blue.
     function fmtComment(str) {
       var frag = document.createDocumentFragment();
       var s = String(str == null ? '' : str);
-      var re = /\$\$([\s\S]+?)\$\$|%%([\s\S]+?)%%|\^\^([\s\S]+?)\^\^/g;
+      COMMENT_RE.lastIndex = 0;
       var last = 0, m;
-      while ((m = re.exec(s))) {
+      while ((m = COMMENT_RE.exec(s))) {
         if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
         var el, txt;
         if (m[1] != null) { el = document.createElement('b'); txt = m[1]; }
         else if (m[2] != null) { el = document.createElement('span'); el.className = 'c-red'; txt = m[2]; }
-        else { el = document.createElement('span'); el.className = 'c-green'; txt = m[3]; }
+        else if (m[3] != null) { el = document.createElement('span'); el.className = 'c-green'; txt = m[3]; }
+        else { el = document.createElement('span'); el.className = 'c-blue'; txt = m[4]; }
         el.textContent = txt;
         frag.appendChild(el);
-        last = re.lastIndex;
+        last = COMMENT_RE.lastIndex;
       }
       if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
       return frag;
@@ -1199,26 +1208,84 @@
     }
 
     function closeHistory() { historyModal.classList.add('hidden'); }
+    var historyEntries = [], historyName = 'history';
     function openHistory() {
       var b = curBal();
       if (!b) return;
       var title = 'History — ' + b.label;
-      var uid = selfId;
+      var uid = selfId, who2 = '';
       if (amAdmin) {
         var u = usersById[userSelect.value];
         if (!u) return;
         uid = u.id;
+        who2 = u.name + ' ';
         title = 'History — ' + u.name + ' · ' + b.label;
       }
+      historyName = (who2 + b.label).trim();
+      historyEntries = [];
+      historyExport.classList.toggle('hidden', !amAdmin);
+      historyExport.disabled = true;
       historyTitle.textContent = title;
       historyBody.innerHTML = '<p class="empty">Loading…</p>';
       historyModal.classList.remove('hidden');
       apiJson('/history?userId=' + encodeURIComponent(uid) + '&balanceId=' + encodeURIComponent(b.id))
-        .then(function (res) { renderHistory(res.history); }) // already newest-first
+        .then(function (res) {
+          historyEntries = res.history || []; // already newest-first
+          historyExport.disabled = !historyEntries.length;
+          renderHistory(historyEntries);
+        })
         .catch(function (err) {
           historyBody.innerHTML = '<p class="empty">' + (err.message || 'Could not load history.') + '</p>';
         });
     }
+
+    // ---- history export to a spreadsheet ----
+    function stripMarks(s) {
+      return String(s == null ? '' : s).replace(COMMENT_RE, function (_, a, b, c, d) {
+        return a || b || c || d || '';
+      });
+    }
+    function xlChange(e) {
+      switch (e.type) {
+        case 'adjusted': { var d = Number(e.delta) || 0; return (d >= 0 ? '+' : '−') + fmt(Math.abs(d)); }
+        case 'topup-approved': return '+' + fmt(e.amount);
+        case 'set': return fmt(e.from) + ' → ' + fmt(e.to);
+        case 'topup-rejected': return 'rejected ' + fmt(e.amount);
+        case 'renamed': return 'renamed “' + e.from + '” → “' + e.to + '”';
+        case 'archived': return 'archived';
+        case 'restored': return 'restored';
+        case 'created': return 'created';
+        default: return e.type || '';
+      }
+    }
+    function xlBalance(e) {
+      if (typeof e.total === 'number') return fmt(e.total);
+      if (e.type === 'adjusted' || e.type === 'set') return fmt(e.to);
+      return '';
+    }
+    function exportHistory() {
+      if (!historyEntries.length) return;
+      var esc = function (v) {
+        return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      };
+      var rows = historyEntries.map(function (e) {
+        return '<tr><td>' + esc(xlChange(e)) + '</td><td>' + esc(stripMarks(e.comment))
+          + '</td><td>' + esc(xlBalance(e)) + '</td><td>' + esc(fmtWhen(e.at)) + '</td></tr>';
+      }).join('');
+      var html = '<html><head><meta charset="utf-8"></head><body><table border="1">'
+        + '<tr><th>Change</th><th>Comment</th><th>Balance</th><th>Time</th></tr>'
+        + rows + '</table></body></html>';
+      var blob = new Blob(['﻿' + html], { type: 'application/vnd.ms-excel' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = ('history ' + historyName).replace(/[^\w .()-]+/g, '_').trim() + '.xls';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+    }
+    historyExport.addEventListener('click', exportHistory);
 
     historyBtn.addEventListener('click', openHistory);
     historyClose.addEventListener('click', closeHistory);
