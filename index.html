@@ -234,6 +234,14 @@
       margin-bottom: 0.35rem;
     }
     .row { display: flex; gap: 0.5rem; }
+    #balance-editor {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    #balance-input { flex: 0 0 50%; min-width: 0; }
+    #balance-editor button { flex: 0 0 auto; }
     .row input { flex: 1; }
     .row button { white-space: nowrap; }
     .admin-area hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
@@ -374,11 +382,9 @@
             <p class="msg" id="review-status"></p>
           </div>
 
-          <div class="fld" id="balance-editor">
-            <span class="row">
-              <input type="text" id="balance-input" inputmode="text" autocomplete="off" placeholder="750, +50 or -30">
-              <button type="button" class="primary" id="save-balance-btn">Save</button>
-            </span>
+          <div id="balance-editor">
+            <input type="text" id="balance-input" inputmode="text" autocomplete="off" placeholder="750, +50, -30">
+            <button type="button" class="primary" id="save-balance-btn">Save</button>
           </div>
           <p class="msg" id="admin-status"></p>
 
