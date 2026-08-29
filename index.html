@@ -235,6 +235,21 @@
             </span>
           </form>
           <p class="msg" id="invite-status"></p>
+
+          <hr>
+
+          <label class="fld">
+            <span>Assign a name</span>
+            <select id="name-user-select"></select>
+          </label>
+          <label class="fld">
+            <span>Name</span>
+            <span class="row">
+              <input type="text" id="name-input" maxlength="120" autocomplete="off">
+              <button type="button" class="primary" id="save-name-btn">Save</button>
+            </span>
+          </label>
+          <p class="msg" id="name-status"></p>
         </div>
       </div>
     </section>
@@ -259,6 +274,7 @@
     var adminStatus = $('admin-status'), inviteForm = $('invite-form'), inviteEmail = $('invite-email'), inviteStatus = $('invite-status');
     var userPicker = $('user-picker'), balanceEditor = $('balance-editor'), noUsersMsg = $('no-users-msg');
     var adminTabs = $('admin-tabs'), balanceSection = $('balance-section');
+    var nameUserSelect = $('name-user-select'), nameInput = $('name-input'), saveNameBtn = $('save-name-btn'), nameStatus = $('name-status');
     var tabButtons = document.querySelectorAll('.tab'), tabPanels = { users: $('panel-users'), config: $('panel-config') };
 
     function selectTab(name) {
@@ -386,7 +402,9 @@
     }
 
     // ---- app state ----
-    var selfId = null, usersById = {};
+    var selfId = null, usersById = {}, allUsersById = {};
+
+    function invitedSuffix(u) { return u.confirmed ? '' : ' · invited'; }
 
     function setBalanceView(labelText, amount) {
       amountEl.textContent = (typeof amount === 'number') ? fmt(amount) : (amount || '—');
@@ -402,7 +420,7 @@
 
       return apiJson('/me').then(function (me) {
         selfId = me.id;
-        who.textContent = me.email;
+        who.textContent = me.name || me.email;
         roleBadge.textContent = me.isAdmin ? 'admin' : 'user';
         roleBadge.className = 'badge ' + (me.isAdmin ? 'admin' : 'user');
 
@@ -436,43 +454,67 @@
 
     function loadUsers() {
       return apiJson('/users').then(function (data) {
-        // Admins have no balance and are not managed here.
-        var users = (data.users || []).filter(function (u) { return !u.isAdmin; });
+        var all = data.users || [];
+        allUsersById = {};
+        all.forEach(function (u) { allUsersById[u.id] = u; });
+
+        // --- Users tab: non-admins only (admins have no balance) ---
+        var managed = all.filter(function (u) { return !u.isAdmin; });
         usersById = {};
+        var prevUser = userSelect.value;
         userSelect.innerHTML = '';
-        users.forEach(function (u) {
+        managed.forEach(function (u) {
           usersById[u.id] = u;
           var o = document.createElement('option');
           o.value = u.id;
-          o.textContent = u.email + (u.confirmed ? '' : ' · invited');
+          o.textContent = u.name + invitedSuffix(u);
           userSelect.appendChild(o);
         });
-
-        var hasUsers = users.length > 0;
+        var hasUsers = managed.length > 0;
         userPicker.classList.toggle('hidden', !hasUsers);
         balanceEditor.classList.toggle('hidden', !hasUsers);
         noUsersMsg.classList.toggle('hidden', hasUsers);
-
         if (hasUsers) {
-          userSelect.value = users[0].id;
+          userSelect.value = (prevUser in usersById) ? prevUser : managed[0].id;
           onUserSelect();
         } else {
           setBalanceView('', '—');
         }
+
+        // --- Config tab: name dropdown lists everyone, incl. admins ---
+        var prevName = nameUserSelect.value;
+        nameUserSelect.innerHTML = '';
+        all.forEach(function (u) {
+          var o = document.createElement('option');
+          o.value = u.id;
+          o.textContent = u.name + (u.isAdmin ? ' · admin' : '') + invitedSuffix(u);
+          nameUserSelect.appendChild(o);
+        });
+        nameUserSelect.value = (prevName && allUsersById[prevName]) ? prevName : selfId;
+        onNameUserSelect();
       });
     }
 
     function onUserSelect() {
       var u = usersById[userSelect.value];
       if (!u) return;
-      var label = u.email + (u.confirmed ? '' : ' · invited, not signed in yet');
+      var label = u.name + (u.confirmed ? '' : ' · invited, not signed in yet');
       setBalanceView(label, u.balance);
       balanceInput.value = u.balance;
       adminStatus.textContent = '';
       adminStatus.className = 'msg';
     }
 
+    function onNameUserSelect() {
+      var u = allUsersById[nameUserSelect.value];
+      if (!u) return;
+      nameInput.value = u.name;
+      nameStatus.textContent = '';
+      nameStatus.className = 'msg';
+    }
+
     userSelect.addEventListener('change', onUserSelect);
+    nameUserSelect.addEventListener('change', onNameUserSelect);
 
     saveBtn.addEventListener('click', function () {
       var u = usersById[userSelect.value];
@@ -489,9 +531,9 @@
       apiJson('/balance', jsonReq({ userId: u.id, balance: n }, 'PUT'))
         .then(function (res) {
           u.balance = res.balance;
-          setBalanceView(u.email + (u.confirmed ? '' : ' · invited, not signed in yet'), res.balance);
+          setBalanceView(u.name + (u.confirmed ? '' : ' · invited, not signed in yet'), res.balance);
           balanceInput.value = res.balance;
-          adminStatus.textContent = 'Saved ' + fmt(res.balance) + ' for ' + u.email + '.';
+          adminStatus.textContent = 'Saved ' + fmt(res.balance) + ' for ' + u.name + '.';
           adminStatus.className = 'msg ok';
         })
         .catch(function (err) {
@@ -499,6 +541,27 @@
           adminStatus.className = 'msg err';
         })
         .then(function () { saveBtn.disabled = false; });
+    });
+
+    saveNameBtn.addEventListener('click', function () {
+      var u = allUsersById[nameUserSelect.value];
+      if (!u) return;
+      var newName = (nameInput.value || '').trim();
+      saveNameBtn.disabled = true;
+      nameStatus.textContent = 'Saving…';
+      nameStatus.className = 'msg';
+      apiJson('/name', jsonReq({ userId: u.id, name: newName }, 'PUT'))
+        .then(function (res) {
+          if (u.id === selfId) who.textContent = res.name;
+          nameStatus.textContent = 'Saved. Name is now “' + res.name + '”.';
+          nameStatus.className = 'msg ok';
+          return loadUsers();
+        })
+        .catch(function (err) {
+          nameStatus.textContent = err.message;
+          nameStatus.className = 'msg err';
+        })
+        .then(function () { saveNameBtn.disabled = false; });
     });
 
     inviteForm.addEventListener('submit', function (e) {

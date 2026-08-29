@@ -29,6 +29,10 @@ const balanceOf = (meta) => {
   const b = meta && meta.balance;
   return typeof b === 'number' && isFinite(b) ? b : 0;
 };
+const nameOf = (meta, email) => {
+  const n = meta && typeof meta.name === 'string' && meta.name.trim();
+  return n || email;
+};
 
 // Call the Netlify Identity (GoTrue) API. `token` is either the caller's
 // access token (for /user) or the admin token from clientContext.identity.
@@ -79,6 +83,7 @@ export async function handler(event, context) {
       return json(200, {
         id: user.sub,
         email: user.email,
+        name: nameOf(meta, user.email),
         isAdmin: rolesOf(meta).indexOf('admin') !== -1,
         balance: balanceOf(meta),
       });
@@ -104,11 +109,12 @@ export async function handler(event, context) {
       const rows = users.map((u) => ({
         id: u.id,
         email: u.email,
+        name: nameOf(u.app_metadata, u.email),
         isAdmin: rolesOf(u.app_metadata).indexOf('admin') !== -1,
         confirmed: !!u.confirmed_at,
         balance: balanceOf(u.app_metadata),
       }));
-      rows.sort((a, b) => a.email.localeCompare(b.email));
+      rows.sort((a, b) => a.name.localeCompare(b.name));
       return json(200, { users: rows });
     }
 
@@ -130,6 +136,25 @@ export async function handler(event, context) {
         body: JSON.stringify({ app_metadata: merged }),
       });
       return json(200, { userId, balance: balanceOf(updated.app_metadata) });
+    }
+
+    // PUT /name { userId, name } — assign a display name (blank/email clears it)
+    if (route === '/name' && method === 'PUT') {
+      const { userId, name } = readBody(event);
+      if (!userId) return json(400, { error: 'userId is required.' });
+      const clean = typeof name === 'string' ? name.trim().slice(0, 120) : '';
+
+      const target = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`);
+      const merged = { ...(target.app_metadata || {}) };
+      if (!clean || clean === target.email) delete merged.name;
+      else merged.name = clean;
+
+      const updated = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ app_metadata: merged }),
+      });
+      const email = updated.email || target.email;
+      return json(200, { userId, name: nameOf(updated.app_metadata, email), email });
     }
 
     // POST /invite { email } — send a Netlify Identity invite
