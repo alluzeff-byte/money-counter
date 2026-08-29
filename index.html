@@ -245,12 +245,8 @@
       margin-bottom: 0.35rem;
     }
     .row { display: flex; gap: 0.5rem; }
-    #balance-editor {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      margin-bottom: 1rem;
-    }
+    #balance-editor { margin-bottom: 1rem; }
+    #balance-editor .row { align-items: center; }
     #balance-input { flex: 0 0 50%; min-width: 0; }
     #balance-editor button { flex: 0 0 auto; }
     .row input { flex: 1; }
@@ -396,10 +392,13 @@
             <p class="msg" id="review-status"></p>
           </div>
 
-          <div id="balance-editor">
-            <input type="text" id="balance-input" inputmode="text" autocomplete="off" placeholder="20  or  -30">
-            <button type="button" class="primary" id="save-balance-btn">Add</button>
-          </div>
+          <label class="fld" id="balance-editor">
+            <span>Change balance</span>
+            <div class="row">
+              <input type="text" id="balance-input" inputmode="text" autocomplete="off" placeholder="20  or  -30">
+              <button type="button" class="primary" id="save-balance-btn">Add</button>
+            </div>
+          </label>
 
           <label class="fld" id="bal-view-picker">
             <span>Show</span>
