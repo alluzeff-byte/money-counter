@@ -181,8 +181,6 @@
       </form>
       <button type="button" class="link-btn" id="forgot-btn">Forgot password?</button>
 
-      <button type="button" class="primary hidden" id="sso-btn">Sign in with GitHub</button>
-
       <p id="gate-error" class="msg err hidden"></p>
       <p id="gate-note" class="msg hidden"></p>
     </section>
@@ -269,7 +267,7 @@
     var adminArea = $('admin-area');
     var gateMsg = $('gate-msg'), gateError = $('gate-error'), gateNote = $('gate-note');
     var loginForm = $('login-form'), emailInput = $('email'), pwInput = $('password');
-    var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), ssoBtn = $('sso-btn'), logoutBtn = $('logout-btn');
+    var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), logoutBtn = $('logout-btn');
     var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn');
     var adminStatus = $('admin-status'), inviteForm = $('invite-form'), inviteEmail = $('invite-email'), inviteStatus = $('invite-status');
     var userPicker = $('user-picker'), balanceEditor = $('balance-editor'), noUsersMsg = $('no-users-msg');
@@ -294,38 +292,6 @@
     function showError(m) { gateError.textContent = m; gateError.classList.remove('hidden'); gateNote.classList.add('hidden'); }
     function showNote(m) { gateNote.textContent = m; gateNote.classList.remove('hidden'); gateError.classList.add('hidden'); }
     function clearMsgs() { gateError.classList.add('hidden'); gateNote.classList.add('hidden'); }
-
-    var host = location.hostname;
-    var useNetlifyIdentity = /(^|\.)netlify\.app$/.test(host) || host === 'localhost' || host === '127.0.0.1';
-
-    // ===================== Azure Static Web Apps (auth only, no backend) =====================
-    if (!useNetlifyIdentity) {
-      loginForm.classList.add('hidden');
-      forgotBtn.classList.add('hidden');
-      ssoBtn.classList.remove('hidden');
-      ssoBtn.addEventListener('click', function () {
-        window.location.href = '/.auth/login/github?post_login_redirect_uri=%2F';
-      });
-      logoutBtn.addEventListener('click', function () {
-        window.location.href = '/.auth/logout?post_logout_redirect_uri=%2Flogin';
-      });
-      fetch('/.auth/me', { credentials: 'same-origin' })
-        .then(function (r) { return r.ok ? r.json() : { clientPrincipal: null }; })
-        .then(function (data) {
-          var p = data && data.clientPrincipal;
-          if (!p) { showGate(); return; }
-          who.textContent = p.userDetails;
-          var admin = (p.userRoles || []).indexOf('admin') !== -1;
-          roleBadge.textContent = admin ? 'admin' : 'user';
-          roleBadge.className = 'badge ' + (admin ? 'admin' : 'user');
-          amountEl.textContent = '—';
-          balanceSub.textContent = 'Per-user balances live on the Netlify deployment.';
-          gate.classList.add('hidden');
-          app.classList.remove('hidden');
-        })
-        .catch(showGate);
-      return;
-    }
 
     // ===================== Netlify Identity (GoTrue REST) + Functions API =====================
     var ID = '/.netlify/identity';
