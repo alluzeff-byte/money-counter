@@ -203,12 +203,12 @@
     } else {
       // ---- Azure Static Web Apps built-in auth (Azure deployment) ----
       loginBtn.addEventListener('click', function () {
-        window.location.href = '/.auth/login/github?post_login_redirect_uri=' +
-          encodeURIComponent(window.location.pathname);
+        window.location.href = '/.auth/login/github?post_login_redirect_uri=%2F';
       });
       logoutBtn.addEventListener('click', function () {
-        window.location.href = '/.auth/logout?post_logout_redirect_uri=' +
-          encodeURIComponent(window.location.pathname);
+        // Land on /login, which is anonymous-viewable, so logout doesn't
+        // bounce straight back through GitHub SSO and silently re-login.
+        window.location.href = '/.auth/logout?post_logout_redirect_uri=%2Flogin';
       });
       fetch('/.auth/me', { credentials: 'same-origin' })
         .then(function (r) { return r.ok ? r.json() : { clientPrincipal: null }; })
