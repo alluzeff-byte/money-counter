@@ -481,8 +481,13 @@
 
     // Admin: click the "BALANCE" heading to rename the selected user's balance.
     function beginLabelEdit() {
+      if (balanceLabelEl.querySelector('input')) return;
       var u = usersById[userSelect.value];
-      if (!u || balanceLabelEl.querySelector('input')) return;
+      if (!u) {
+        adminStatus.textContent = 'Select a user first.';
+        adminStatus.className = 'msg err';
+        return;
+      }
       var current = u.balanceLabel || 'Balance';
       var input = document.createElement('input');
       input.type = 'text';
