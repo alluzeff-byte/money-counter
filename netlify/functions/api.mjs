@@ -283,24 +283,6 @@ export async function handler(event, context) {
       }
     }
 
-    // GET /blobcheck — admin diagnostic: write/read/delete round-trip
-    if (route === '/blobcheck' && method === 'GET') {
-      if (!admin) return json(403, { error: 'Admin only.' });
-      const out = { hasToken: !!process.env.NETLIFY_BLOBS_TOKEN, siteID: SITE_ID };
-      try {
-        const s = histStore();
-        await s.setJSON('__diag', { at: nowIso() });
-        out.readBack = await s.get('__diag', { type: 'json' });
-        await s.delete('__diag');
-        out.ok = true;
-      } catch (e) {
-        out.ok = false;
-        out.error = (e && (e.message || String(e))) || 'unknown';
-        out.name = e && e.name;
-      }
-      return json(200, out);
-    }
-
     // POST /request { balanceId, amount, comment } — caller asks for a top-up
     if (route === '/request' && method === 'POST') {
       const { balanceId, amount, comment } = readBody(event);
