@@ -42,6 +42,12 @@ const cleanLabel = (v) => {
 };
 const cleanComment = (v) => String(v == null ? '' : v).trim().slice(0, 500);
 const nowIso = () => new Date().toISOString();
+const gbp = (n) => '£' + (Math.round(num(n) * 100) / 100).toLocaleString('en-GB', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const isEmail = (s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(s || ''));
+const notifyEmailOf = (meta, fallback) => {
+  const e = meta && typeof meta.notifyEmail === 'string' && meta.notifyEmail.trim();
+  return e || fallback;
+};
 
 // Normalise one stored balance object.
 const normBalance = (b, i) => {
@@ -132,6 +138,31 @@ export async function handler(event, context) {
 
   const getUserById = (userId) => adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
 
+  // Email every admin who has enabled notifications, via Resend. No-ops
+  // silently if RESEND_API_KEY is not configured.
+  const notifyAdmins = async (subject, text) => {
+    const key = process.env.RESEND_API_KEY;
+    if (!key) return;
+    const data = await adminFetch('/admin/users?per_page=200');
+    const recipients = [...new Set(
+      ((data && data.users) || [])
+        .filter((u) => isAdminMeta(u.app_metadata) && u.app_metadata && u.app_metadata.notifyEnabled)
+        .map((u) => notifyEmailOf(u.app_metadata, u.email))
+        .filter(isEmail),
+    )];
+    if (!recipients.length) return;
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: process.env.NOTIFY_FROM || 'Money Counter <onboarding@resend.dev>',
+        to: recipients,
+        subject,
+        text,
+      }),
+    });
+  };
+
   // Persist a balances array and return the normalised result. The first
   // balance is mirrored to the legacy fields for any external reader.
   const saveBalances = async (userId, targetMeta, balances) => {
@@ -164,6 +195,8 @@ export async function handler(event, context) {
         email: user.email,
         name: nameOf(meta, user.email),
         isAdmin: isAdminMeta(meta),
+        notifyEmail: notifyEmailOf(meta, user.email),
+        notifyEnabled: !!(meta && meta.notifyEnabled),
         balances: normBalances(meta),
       });
     }
@@ -186,6 +219,15 @@ export async function handler(event, context) {
       b.request = { amount: money(n), comment: c, at: nowIso(), by: user.email };
       pushBalHist(b, { at: b.request.at, by: user.email, type: 'topup-requested', amount: b.request.amount, comment: c });
       const out = await saveBalances(user.sub, target.app_metadata, balances);
+
+      // Best-effort email notification to subscribed admins.
+      await notifyAdmins(
+        `Top-up request: ${gbp(b.request.amount)} on "${b.label}"`,
+        `${user.email} requested a top-up of ${gbp(b.request.amount)} on "${b.label}".\n\n`
+        + `Comment: ${c || '(none)'}\n\n`
+        + `Review it in the admin console.`,
+      ).catch(() => {});
+
       return json(200, { balances: out });
     }
 
@@ -369,6 +411,27 @@ export async function handler(event, context) {
         body: JSON.stringify({ app_metadata: merged }),
       });
       return json(200, { userId, name: nameOf(updated.app_metadata, email), email });
+    }
+
+    // PUT /notify { email, enabled } — the calling admin's own notification
+    // settings (recipient address + on/off)
+    if (route === '/notify' && method === 'PUT') {
+      const { email, enabled } = readBody(event);
+      const clean = typeof email === 'string' ? email.trim().slice(0, 200) : '';
+      if (clean && !isEmail(clean)) return json(400, { error: 'Enter a valid email address.' });
+
+      const me = await getUserById(user.sub);
+      const merged = { ...(me.app_metadata || {}) };
+      if (clean) merged.notifyEmail = clean; else delete merged.notifyEmail;
+      merged.notifyEnabled = !!enabled;
+      const updated = await adminFetch(`/admin/users/${encodeURIComponent(user.sub)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ app_metadata: merged }),
+      });
+      return json(200, {
+        notifyEmail: notifyEmailOf(updated.app_metadata, user.email),
+        notifyEnabled: !!updated.app_metadata.notifyEnabled,
+      });
     }
 
     // POST /invite { email } — send a Netlify Identity invite

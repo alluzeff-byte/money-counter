@@ -118,6 +118,8 @@
       letter-spacing: 0.08em; color: var(--muted);
     }
     .note { font-size: 0.82rem; color: var(--muted); margin: 0; }
+    .chk { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; margin-bottom: 0.75rem; cursor: pointer; }
+    .chk input { width: auto; }
     #balance-label.editable { cursor: text; }
     #balance-label.editable:hover { color: var(--text); }
     #balance-label.editable::after {
@@ -372,13 +374,12 @@
             <p class="msg" id="review-status"></p>
           </div>
 
-          <label class="fld" id="balance-editor">
-            <span>Set balance (£) &mdash; <span id="editing-label">Balance</span>. Use <b>+</b>/<b>&minus;</b> to add or subtract.</span>
+          <div class="fld" id="balance-editor">
             <span class="row">
               <input type="text" id="balance-input" inputmode="text" autocomplete="off" placeholder="750, +50 or -30">
               <button type="button" class="primary" id="save-balance-btn">Save</button>
             </span>
-          </label>
+          </div>
           <p class="msg" id="admin-status"></p>
 
           <label class="fld" id="bal-view-picker">
@@ -416,6 +417,19 @@
             </span>
           </label>
           <p class="msg" id="name-status"></p>
+
+          <hr>
+
+          <label class="fld">
+            <span>Notification email</span>
+            <input type="email" id="notify-email" autocomplete="off">
+          </label>
+          <label class="chk">
+            <input type="checkbox" id="notify-enabled">
+            <span>Send mail notifications</span>
+          </label>
+          <button type="button" class="primary" id="notify-save">Save</button>
+          <p class="msg" id="notify-status"></p>
         </div>
       </div>
     </section>
@@ -448,13 +462,14 @@
     var loginForm = $('login-form'), emailInput = $('email'), pwInput = $('password');
     var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), logoutBtn = $('logout-btn');
     var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn');
-    var balPrev = $('bal-prev'), balNext = $('bal-next'), editingLabelEl = $('editing-label');
+    var balPrev = $('bal-prev'), balNext = $('bal-next');
     var balPlus = $('bal-plus'), balMinus = $('bal-minus'), noBalanceMsg = $('no-balance-msg');
     var balViewPicker = $('bal-view-picker'), balViewSelect = $('bal-view-select');
     var adminStatus = $('admin-status'), inviteForm = $('invite-form'), inviteEmail = $('invite-email'), inviteStatus = $('invite-status');
     var userPicker = $('user-picker'), balanceEditor = $('balance-editor'), noUsersMsg = $('no-users-msg');
     var adminTabs = $('admin-tabs'), balanceSection = $('balance-section');
     var nameUserSelect = $('name-user-select'), nameInput = $('name-input'), saveNameBtn = $('save-name-btn'), nameStatus = $('name-status');
+    var notifyEmailInput = $('notify-email'), notifyEnabledInput = $('notify-enabled'), notifySaveBtn = $('notify-save'), notifyStatus = $('notify-status');
     var historyBtn = $('history-btn'), historyModal = $('history-modal'), historyBody = $('history-body');
     var historyTitle = $('history-title'), historyClose = $('history-close');
     var requestBox = $('request-box'), requestPending = $('request-pending'), requestAmount = $('request-amount');
@@ -586,7 +601,6 @@
       reviewBox.classList.add('hidden');
       requestPending.classList.add('hidden');
       noBalanceMsg.classList.add('hidden');
-      if (editingLabelEl) editingLabelEl.textContent = 'Balance';
       applyBalanceControls();
     }
 
@@ -611,7 +625,6 @@
         requestPending.classList.add('hidden');
         noBalanceMsg.textContent = 'No ' + balView + ' balances.';
         noBalanceMsg.classList.remove('hidden');
-        if (editingLabelEl) editingLabelEl.textContent = '—';
         applyBalanceControls();
         return;
       }
@@ -624,7 +637,6 @@
       balNext.classList.toggle('hidden', balanceIdx >= list.length - 1);
       historyBtn.classList.remove('hidden');
       balanceInput.value = b.amount;
-      if (editingLabelEl) editingLabelEl.textContent = b.label;
       renderRequestUI(b);
       applyBalanceControls();
     }
@@ -863,6 +875,9 @@
           balanceLabelEl.classList.add('editable');
           balanceLabelEl.title = 'Click to rename this balance';
           requestBox.classList.add('hidden');
+          notifyEmailInput.value = me.notifyEmail || me.email || '';
+          notifyEnabledInput.checked = !!me.notifyEnabled;
+          notifyStatus.textContent = '';
           clearBalances();
           adminTabs.classList.remove('hidden');
           adminArea.classList.remove('hidden');
@@ -1094,6 +1109,29 @@
           nameStatus.className = 'msg err';
         })
         .then(function () { saveNameBtn.disabled = false; });
+    });
+
+    notifySaveBtn.addEventListener('click', function () {
+      notifySaveBtn.disabled = true;
+      notifyStatus.textContent = 'Saving…';
+      notifyStatus.className = 'msg';
+      apiJson('/notify', jsonReq({
+        email: (notifyEmailInput.value || '').trim(),
+        enabled: notifyEnabledInput.checked
+      }, 'PUT'))
+        .then(function (res) {
+          notifyEmailInput.value = res.notifyEmail || '';
+          notifyEnabledInput.checked = !!res.notifyEnabled;
+          notifyStatus.textContent = res.notifyEnabled
+            ? 'Saved. Notifications on → ' + res.notifyEmail
+            : 'Saved. Notifications off.';
+          notifyStatus.className = 'msg ok';
+        })
+        .catch(function (err) {
+          notifyStatus.textContent = err.message;
+          notifyStatus.className = 'msg err';
+        })
+        .then(function () { notifySaveBtn.disabled = false; });
     });
 
     inviteForm.addEventListener('submit', function (e) {
