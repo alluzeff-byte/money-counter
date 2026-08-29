@@ -14,6 +14,7 @@
       --border: #e2e6ea;
       --field: #ffffff;
       --err: #c0392b;
+      --ok: #0b6e4f;
       --badge-admin-bg: #0b6e4f;
       --badge-user-bg: #3454d1;
     }
@@ -27,6 +28,7 @@
         --border: #2c303c;
         --field: #12141c;
         --err: #ff6b6b;
+        --ok: #35d0a0;
         --badge-admin-bg: #147a58;
         --badge-user-bg: #3f5bd9;
       }
@@ -48,11 +50,11 @@
       border-radius: 20px;
       box-shadow: 0 10px 40px rgba(0, 0, 0, 0.12);
       text-align: center;
-      max-width: 420px;
+      max-width: 440px;
       width: calc(100vw - 2rem);
     }
     .label {
-      margin: 0 0 0.75rem;
+      margin: 0 0 0.5rem;
       font-size: 0.95rem;
       letter-spacing: 0.12em;
       text-transform: uppercase;
@@ -60,11 +62,13 @@
     }
     .amount {
       margin: 0;
-      font-size: 4.5rem;
+      font-size: 4rem;
       font-weight: 700;
       color: var(--accent);
       font-variant-numeric: tabular-nums;
+      line-height: 1.1;
     }
+    .sub { margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--muted); }
     .userbar {
       display: flex;
       align-items: center;
@@ -104,51 +108,62 @@
       font-weight: 600;
     }
     button[disabled] { opacity: 0.6; cursor: default; }
-    #login-form { display: flex; flex-direction: column; gap: 0.6rem; margin: 1rem 0 0.25rem; text-align: left; }
-    #login-form input {
+    input, select {
       font: inherit;
-      padding: 0.6rem 0.75rem;
+      padding: 0.55rem 0.7rem;
       border-radius: 10px;
       border: 1px solid var(--border);
       background: var(--field);
       color: var(--text);
       width: 100%;
     }
-    #login-form button { margin-top: 0.25rem; }
+    #login-form { display: flex; flex-direction: column; gap: 0.6rem; margin: 1rem 0 0.25rem; text-align: left; }
     .link-btn {
       background: none; border: none; padding: 0.4rem;
       color: var(--muted); text-decoration: underline;
       font-size: 0.8rem; cursor: pointer;
     }
-    .msg { color: var(--muted); margin: 0.5rem 0 0; font-size: 0.85rem; }
-    .err { color: var(--err); margin: 0.6rem 0 0; font-size: 0.83rem; }
+    .msg { color: var(--muted); margin: 0.6rem 0 0; font-size: 0.83rem; min-height: 1.1em; }
+    .msg.err { color: var(--err); }
+    .msg.ok { color: var(--ok); }
+    .gate p { color: var(--muted); margin: 0.5rem 0 0; }
+
     .admin-area {
       margin-top: 1.75rem;
-      padding-top: 1rem;
+      padding-top: 1.25rem;
       border-top: 1px dashed var(--border);
-      font-size: 0.85rem;
-      color: var(--muted);
       text-align: left;
     }
     .admin-area h2 {
-      margin: 0 0 0.35rem;
+      margin: 0 0 1rem;
       font-size: 0.8rem;
       letter-spacing: 0.1em;
       text-transform: uppercase;
       color: var(--text);
     }
+    .fld { display: block; margin-bottom: 1rem; }
+    .fld > span:first-child {
+      display: block;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    .row { display: flex; gap: 0.5rem; }
+    .row input { flex: 1; }
+    .row button { white-space: nowrap; }
+    .admin-area hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
     .hidden { display: none !important; }
-    .gate p { color: var(--muted); margin: 0.5rem 0 0; }
   </style>
 </head>
 <body>
   <main class="card">
-    <!-- Shown when logged out -->
+    <!-- Logged out -->
     <section id="gate" class="gate hidden">
       <p class="label">Money Counter</p>
       <p id="gate-msg">Sign in to view this page.</p>
 
-      <!-- Email/password form (Netlify) -->
       <form id="login-form">
         <input type="email" id="email" placeholder="Email" autocomplete="username" required>
         <input type="password" id="password" placeholder="Password" autocomplete="current-password" required>
@@ -156,14 +171,13 @@
       </form>
       <button type="button" class="link-btn" id="forgot-btn">Forgot password?</button>
 
-      <!-- SSO button (Azure) -->
       <button type="button" class="primary hidden" id="sso-btn">Sign in with GitHub</button>
 
-      <p id="gate-error" class="err hidden"></p>
+      <p id="gate-error" class="msg err hidden"></p>
       <p id="gate-note" class="msg hidden"></p>
     </section>
 
-    <!-- Shown when logged in -->
+    <!-- Logged in -->
     <section id="app" class="hidden">
       <div class="userbar">
         <span class="who" id="who"></span>
@@ -172,58 +186,73 @@
           <button id="logout-btn">Log out</button>
         </span>
       </div>
+
       <p class="label">Balance</p>
-      <p class="amount" id="amount"></p>
+      <p class="amount" id="amount">—</p>
+      <p class="sub" id="balance-sub"></p>
 
       <div class="admin-area hidden" id="admin-area">
-        <h2>Admin</h2>
-        <p>Admin-only controls will go here. (Differences between admin and user accounts to be defined.)</p>
+        <h2>Admin console</h2>
+
+        <label class="fld">
+          <span>View user</span>
+          <select id="user-select"></select>
+        </label>
+
+        <label class="fld">
+          <span>Set balance (£)</span>
+          <span class="row">
+            <input type="number" id="balance-input" min="0" step="0.01" inputmode="decimal">
+            <button type="button" class="primary" id="save-balance-btn">Save</button>
+          </span>
+        </label>
+        <p class="msg" id="admin-status"></p>
+
+        <hr>
+
+        <form class="fld" id="invite-form">
+          <span>Invite a user by email</span>
+          <span class="row">
+            <input type="email" id="invite-email" placeholder="name@example.com" autocomplete="off">
+            <button type="submit" class="primary" id="invite-btn">Invite</button>
+          </span>
+        </form>
+        <p class="msg" id="invite-status"></p>
       </div>
     </section>
   </main>
 
   <script>
   (function () {
-    var value = 750;
-    var formatted = new Intl.NumberFormat('en-GB', {
-      style: 'currency', currency: 'GBP', minimumFractionDigits: 0
-    }).format(value);
+    var fmt = function (n) {
+      return new Intl.NumberFormat('en-GB', {
+        style: 'currency', currency: 'GBP', minimumFractionDigits: 0, maximumFractionDigits: 2
+      }).format(Number(n) || 0);
+    };
 
     var $ = function (id) { return document.getElementById(id); };
     var gate = $('gate'), app = $('app');
-    var who = $('who'), roleBadge = $('role-badge'), adminArea = $('admin-area'), amountEl = $('amount');
+    var who = $('who'), roleBadge = $('role-badge'), amountEl = $('amount'), balanceSub = $('balance-sub');
+    var adminArea = $('admin-area');
     var gateMsg = $('gate-msg'), gateError = $('gate-error'), gateNote = $('gate-note');
     var loginForm = $('login-form'), emailInput = $('email'), pwInput = $('password');
     var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), ssoBtn = $('sso-btn'), logoutBtn = $('logout-btn');
+    var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn');
+    var adminStatus = $('admin-status'), inviteForm = $('invite-form'), inviteEmail = $('invite-email'), inviteStatus = $('invite-status');
 
-    // session: null, or { email, isAdmin }
-    function render(session) {
-      if (!session) {
-        app.classList.add('hidden');
-        gate.classList.remove('hidden');
-        return;
-      }
-      who.textContent = session.email;
-      roleBadge.textContent = session.isAdmin ? 'admin' : 'user';
-      roleBadge.className = 'badge ' + (session.isAdmin ? 'admin' : 'user');
-      amountEl.textContent = formatted;
-      adminArea.classList.toggle('hidden', !session.isAdmin);
-      gate.classList.add('hidden');
-      app.classList.remove('hidden');
-    }
-    function showError(msg) { gateError.textContent = msg; gateError.classList.remove('hidden'); gateNote.classList.add('hidden'); }
-    function showNote(msg) { gateNote.textContent = msg; gateNote.classList.remove('hidden'); gateError.classList.add('hidden'); }
+    function showGate() { app.classList.add('hidden'); gate.classList.remove('hidden'); }
+    function showError(m) { gateError.textContent = m; gateError.classList.remove('hidden'); gateNote.classList.add('hidden'); }
+    function showNote(m) { gateNote.textContent = m; gateNote.classList.remove('hidden'); gateError.classList.add('hidden'); }
     function clearMsgs() { gateError.classList.add('hidden'); gateNote.classList.add('hidden'); }
 
     var host = location.hostname;
     var useNetlifyIdentity = /(^|\.)netlify\.app$/.test(host) || host === 'localhost' || host === '127.0.0.1';
 
+    // ===================== Azure Static Web Apps (auth only, no backend) =====================
     if (!useNetlifyIdentity) {
-      // ================= Azure Static Web Apps built-in auth =================
       loginForm.classList.add('hidden');
       forgotBtn.classList.add('hidden');
       ssoBtn.classList.remove('hidden');
-      gateMsg.textContent = 'Sign in to view this page.';
       ssoBtn.addEventListener('click', function () {
         window.location.href = '/.auth/login/github?post_login_redirect_uri=%2F';
       });
@@ -234,15 +263,22 @@
         .then(function (r) { return r.ok ? r.json() : { clientPrincipal: null }; })
         .then(function (data) {
           var p = data && data.clientPrincipal;
-          if (!p) { render(null); return; }
-          render({ email: p.userDetails, isAdmin: (p.userRoles || []).indexOf('admin') !== -1 });
+          if (!p) { showGate(); return; }
+          who.textContent = p.userDetails;
+          var admin = (p.userRoles || []).indexOf('admin') !== -1;
+          roleBadge.textContent = admin ? 'admin' : 'user';
+          roleBadge.className = 'badge ' + (admin ? 'admin' : 'user');
+          amountEl.textContent = '—';
+          balanceSub.textContent = 'Per-user balances live on the Netlify deployment.';
+          gate.classList.add('hidden');
+          app.classList.remove('hidden');
         })
-        .catch(function () { render(null); });
+        .catch(showGate);
       return;
     }
 
-    // ================= Netlify Identity (GoTrue REST, same-origin) =================
-    var API = '/.netlify/identity';
+    // ===================== Netlify Identity (GoTrue REST) + Functions API =====================
+    var ID = '/.netlify/identity';
     var STORE = 'mc.session';
 
     function saveTokens(t) {
@@ -254,74 +290,189 @@
       try { localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) {}
       return s;
     }
-    function loadTokens() {
-      try { return JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { return null; }
-    }
+    function loadTokens() { try { return JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { return null; } }
     function clearTokens() { try { localStorage.removeItem(STORE); } catch (e) {} }
 
     function form(body) {
       return {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: Object.keys(body).map(function (k) {
-          return encodeURIComponent(k) + '=' + encodeURIComponent(body[k]);
-        }).join('&')
+        body: Object.keys(body).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(body[k]); }).join('&')
       };
     }
-    function json(body) {
-      return { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    function jsonReq(body, method) {
+      return { method: method || 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
     }
-    function parseErr(data, fallback) {
-      return (data && (data.error_description || data.msg || data.error)) || fallback;
-    }
+    function errText(d, fb) { return (d && (d.error_description || d.error || d.msg)) || fb; }
 
     function passwordGrant(email, pw) {
-      return fetch(API + '/token', form({ grant_type: 'password', username: email, password: pw }))
+      return fetch(ID + '/token', form({ grant_type: 'password', username: email, password: pw }))
         .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
         .then(function (res) {
-          if (!res.ok) throw new Error(parseErr(res.d, 'Sign in failed. Check your email and password.'));
+          if (!res.ok) throw new Error(errText(res.d, 'Sign in failed. Check your email and password.'));
           return saveTokens(res.d);
         });
     }
     function refreshGrant(rt) {
-      return fetch(API + '/token', form({ grant_type: 'refresh_token', refresh_token: rt }))
+      return fetch(ID + '/token', form({ grant_type: 'refresh_token', refresh_token: rt }))
         .then(function (r) { if (!r.ok) throw new Error('refresh failed'); return r.json(); })
         .then(saveTokens);
     }
-    function fetchUser(at) {
-      return fetch(API + '/user', { headers: { Authorization: 'Bearer ' + at } })
-        .then(function (r) { if (!r.ok) throw new Error('user ' + r.status); return r.json(); });
-    }
-    function toSession(u) {
-      var roles = (u.app_metadata && u.app_metadata.roles) || [];
-      return { email: u.email, isAdmin: roles.indexOf('admin') !== -1 };
-    }
 
-    // Restore an existing session on page load (refresh the token if stale).
-    function restore() {
+    // Authorised call to our Functions API, with one automatic token refresh on 401.
+    function api(path, opts) {
+      opts = opts || {};
       var s = loadTokens();
-      if (!s || !s.access_token) { render(null); return; }
-      var stale = !s.expires_at || s.expires_at < Date.now() + 60000;
-      var ready = stale && s.refresh_token
-        ? refreshGrant(s.refresh_token)
-        : Promise.resolve(s);
-      ready
-        .then(function (fresh) { return fetchUser(fresh.access_token); })
-        .then(function (u) { render(toSession(u)); })
-        .catch(function () {
-          // One more try via refresh, then give up to the login form.
-          var cur = loadTokens();
-          if (cur && cur.refresh_token) {
-            return refreshGrant(cur.refresh_token)
-              .then(function (fresh) { return fetchUser(fresh.access_token); })
-              .then(function (u) { render(toSession(u)); })
-              .catch(function () { clearTokens(); render(null); });
-          }
-          clearTokens(); render(null);
+      if (!s || !s.access_token) return Promise.reject(new Error('No session.'));
+      function call(token) {
+        var headers = {};
+        var src = opts.headers || {};
+        for (var k in src) headers[k] = src[k];
+        headers.Authorization = 'Bearer ' + token;
+        var o = {}; for (var j in opts) o[j] = opts[j];
+        o.headers = headers;
+        return fetch('/api' + path, o);
+      }
+      return call(s.access_token).then(function (r) {
+        if (r.status !== 401 || !s.refresh_token) return r;
+        return refreshGrant(s.refresh_token).then(function (fresh) { return call(fresh.access_token); });
+      });
+    }
+    function apiJson(path, opts) {
+      return api(path, opts).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          if (!r.ok) throw new Error(d.error || ('Request failed (' + r.status + ').'));
+          return d;
         });
+      });
     }
 
-    // ---- Invite / recovery links: #invite_token=... or #recovery_token=... ----
+    // ---- app state ----
+    var selfId = null, usersById = {};
+
+    function setBalanceView(labelText, amount) {
+      amountEl.textContent = fmt(amount);
+      balanceSub.textContent = labelText || '';
+    }
+
+    function enterApp() {
+      clearMsgs();
+      gate.classList.add('hidden');
+      app.classList.remove('hidden');
+      adminStatus.textContent = '';
+      inviteStatus.textContent = '';
+
+      return apiJson('/me').then(function (me) {
+        selfId = me.id;
+        who.textContent = me.email;
+        roleBadge.textContent = me.isAdmin ? 'admin' : 'user';
+        roleBadge.className = 'badge ' + (me.isAdmin ? 'admin' : 'user');
+        setBalanceView('Your balance', me.balance);
+
+        if (me.isAdmin) {
+          adminArea.classList.remove('hidden');
+          return loadUsers();
+        }
+        adminArea.classList.add('hidden');
+      }).catch(function (err) {
+        // Session no longer valid — back to the login form.
+        clearTokens();
+        showGate();
+        showError(err.message || 'Could not load your account.');
+      });
+    }
+
+    function loadUsers() {
+      return apiJson('/users').then(function (data) {
+        var users = data.users || [];
+        usersById = {};
+        userSelect.innerHTML = '';
+        users.forEach(function (u) {
+          usersById[u.id] = u;
+          var o = document.createElement('option');
+          o.value = u.id;
+          o.textContent = u.email
+            + (u.id === selfId ? ' (you)' : '')
+            + (u.isAdmin ? ' · admin' : '')
+            + (u.confirmed ? '' : ' · invited');
+          userSelect.appendChild(o);
+        });
+        userSelect.value = selfId in usersById ? selfId : (users[0] && users[0].id);
+        onUserSelect();
+      });
+    }
+
+    function onUserSelect() {
+      var u = usersById[userSelect.value];
+      if (!u) return;
+      var label = u.email + (u.id === selfId ? ' (you)' : '');
+      setBalanceView(label, u.balance);
+      balanceInput.value = u.balance;
+      adminStatus.textContent = '';
+      adminStatus.className = 'msg';
+    }
+
+    userSelect.addEventListener('change', onUserSelect);
+
+    saveBtn.addEventListener('click', function () {
+      var u = usersById[userSelect.value];
+      if (!u) return;
+      var n = Number(balanceInput.value);
+      if (!isFinite(n) || n < 0) {
+        adminStatus.textContent = 'Enter a number of 0 or more.';
+        adminStatus.className = 'msg err';
+        return;
+      }
+      saveBtn.disabled = true;
+      adminStatus.textContent = 'Saving…';
+      adminStatus.className = 'msg';
+      apiJson('/balance', jsonReq({ userId: u.id, balance: n }, 'PUT'))
+        .then(function (res) {
+          u.balance = res.balance;
+          setBalanceView(u.email + (u.id === selfId ? ' (you)' : ''), res.balance);
+          balanceInput.value = res.balance;
+          adminStatus.textContent = 'Saved ' + fmt(res.balance) + ' for ' + u.email + '.';
+          adminStatus.className = 'msg ok';
+        })
+        .catch(function (err) {
+          adminStatus.textContent = err.message;
+          adminStatus.className = 'msg err';
+        })
+        .then(function () { saveBtn.disabled = false; });
+    });
+
+    inviteForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var email = (inviteEmail.value || '').trim();
+      if (!email) return;
+      $('invite-btn').disabled = true;
+      inviteStatus.textContent = 'Sending…';
+      inviteStatus.className = 'msg';
+      apiJson('/invite', jsonReq({ email: email }))
+        .then(function (res) {
+          inviteStatus.textContent = 'Invitation sent to ' + res.invited + '. They set a password via the emailed link.';
+          inviteStatus.className = 'msg ok';
+          inviteEmail.value = '';
+          return loadUsers();
+        })
+        .catch(function (err) {
+          inviteStatus.textContent = err.message;
+          inviteStatus.className = 'msg err';
+        })
+        .then(function () { $('invite-btn').disabled = false; });
+    });
+
+    logoutBtn.addEventListener('click', function () {
+      var s = loadTokens();
+      clearTokens();
+      showGate();
+      gateMsg.textContent = 'Signed out. Sign in to view this page.';
+      if (s && s.access_token) {
+        fetch(ID + '/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + s.access_token } }).catch(function () {});
+      }
+    });
+
+    // ---- invite / recovery links ----
     var hash = new URLSearchParams((location.hash || '').replace(/^#\/?/, ''));
     var inviteToken = hash.get('invite_token');
     var recoveryToken = hash.get('recovery_token');
@@ -331,8 +482,8 @@
       try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { location.hash = ''; }
     }
 
-    if (mode === 'invite' || mode === 'recovery') {
-      gate.classList.remove('hidden');
+    if (mode !== 'login') {
+      showGate();
       emailInput.classList.add('hidden');
       emailInput.removeAttribute('required');
       forgotBtn.classList.add('hidden');
@@ -343,7 +494,16 @@
         ? 'You have been invited. Choose a password to finish.'
         : 'Choose a new password.';
     } else {
-      restore();
+      // Restore an existing session, if any.
+      var s0 = loadTokens();
+      if (s0 && s0.access_token) {
+        var stale = !s0.expires_at || s0.expires_at < Date.now() + 60000;
+        (stale && s0.refresh_token ? refreshGrant(s0.refresh_token) : Promise.resolve(s0))
+          .then(function () { return enterApp(); })
+          .catch(function () { clearTokens(); showGate(); });
+      } else {
+        showGate();
+      }
     }
 
     loginForm.addEventListener('submit', function (e) {
@@ -353,59 +513,53 @@
       submitBtn.disabled = true;
       var original = submitBtn.textContent;
       submitBtn.textContent = 'Working…';
-      var done = function () { submitBtn.disabled = false; submitBtn.textContent = original; };
+      var reset = function () { submitBtn.disabled = false; submitBtn.textContent = original; };
 
       var flow;
       if (mode === 'invite') {
-        flow = fetch(API + '/verify', json({ type: 'signup', token: inviteToken, password: pw }))
+        flow = fetch(ID + '/verify', jsonReq({ type: 'signup', token: inviteToken, password: pw }))
           .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
           .then(function (res) {
-            if (!res.ok) throw new Error(parseErr(res.d, 'This invite link is invalid or expired. Ask for a new invite.'));
+            if (!res.ok) throw new Error(errText(res.d, 'This invite link is invalid or expired. Ask for a new invite.'));
             saveTokens(res.d); stripHash(); mode = 'login';
-            return fetchUser(res.d.access_token);
           });
       } else if (mode === 'recovery') {
-        flow = fetch(API + '/verify', json({ type: 'recovery', token: recoveryToken }))
+        flow = fetch(ID + '/verify', jsonReq({ type: 'recovery', token: recoveryToken }))
           .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
           .then(function (res) {
-            if (!res.ok) throw new Error(parseErr(res.d, 'This reset link is invalid or expired.'));
-            var s = saveTokens(res.d);
-            return fetch(API + '/user', {
+            if (!res.ok) throw new Error(errText(res.d, 'This reset link is invalid or expired.'));
+            var sess = saveTokens(res.d);
+            return fetch(ID + '/user', {
               method: 'PUT',
-              headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + s.access_token },
+              headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + sess.access_token },
               body: JSON.stringify({ password: pw })
-            }).then(function (r) { if (!r.ok) throw new Error('Could not set the new password.'); return r.json(); })
-              .then(function (u) { stripHash(); mode = 'login'; return u; });
-          });
+            }).then(function (r) { if (!r.ok) throw new Error('Could not set the new password.'); });
+          })
+          .then(function () { stripHash(); mode = 'login'; });
       } else {
-        flow = passwordGrant(emailInput.value.trim(), pw)
-          .then(function (s) { return fetchUser(s.access_token); });
+        flow = passwordGrant(emailInput.value.trim(), pw);
       }
 
       flow
-        .then(function (u) { done(); pwInput.value = ''; render(toSession(u)); })
-        .catch(function (err) { done(); showError(err.message || 'Something went wrong.'); });
+        .then(function () {
+          pwInput.value = '';
+          // Restore form to normal login mode for next time.
+          emailInput.classList.remove('hidden');
+          forgotBtn.classList.remove('hidden');
+          submitBtn.textContent = 'Log in';
+          return enterApp();
+        })
+        .then(reset)
+        .catch(function (err) { reset(); showError(err.message || 'Something went wrong.'); });
     });
 
     forgotBtn.addEventListener('click', function () {
       clearMsgs();
       var email = emailInput.value.trim();
       if (!email) { showError('Enter your email above first, then click "Forgot password?".'); return; }
-      fetch(API + '/recover', json({ email: email }))
-        .then(function () {
-          showNote('If that email has an account, a password-reset link is on its way. Check your inbox and spam.');
-        })
+      fetch(ID + '/recover', jsonReq({ email: email }))
+        .then(function () { showNote('If that email has an account, a reset link is on its way. Check inbox and spam.'); })
         .catch(function () { showNote('If that email has an account, a reset link is on its way.'); });
-    });
-
-    logoutBtn.addEventListener('click', function () {
-      var s = loadTokens();
-      clearTokens();
-      render(null);
-      if (s && s.access_token) {
-        fetch(API + '/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + s.access_token } })
-          .catch(function () {});
-      }
     });
   })();
   </script>

@@ -1,0 +1,11 @@
+# Netlify build/publish/functions config.
+# No build command: the site is a single static index.html at the repo root.
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+# Friendly API path -> serverless function.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
