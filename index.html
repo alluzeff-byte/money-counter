@@ -1026,7 +1026,7 @@
         }
         var rest = p.desc;
         if (p.total != null) rest += ' · total ' + fmt(p.total);
-        rest += ' · ' + fmtWhen(e.at) + ' · by ' + (e.by || '?');
+        rest += ' · ' + fmtWhen(e.at);
         li.appendChild(document.createTextNode(rest));
         ul.appendChild(li);
       });
