@@ -11,6 +11,9 @@
       --text: #1a1a2e;
       --muted: #6b7280;
       --accent: #0b6e4f;
+      --border: #e2e6ea;
+      --badge-admin-bg: #0b6e4f;
+      --badge-user-bg: #3454d1;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -19,6 +22,9 @@
         --text: #f4f6f8;
         --muted: #9aa3b2;
         --accent: #35d0a0;
+        --border: #2c303c;
+        --badge-admin-bg: #147a58;
+        --badge-user-bg: #3f5bd9;
       }
     }
     * { box-sizing: border-box; }
@@ -34,10 +40,12 @@
     }
     .card {
       background: var(--card);
-      padding: 3rem 4rem;
+      padding: 2.5rem 3rem;
       border-radius: 20px;
       box-shadow: 0 10px 40px rgba(0, 0, 0, 0.12);
       text-align: center;
+      max-width: 420px;
+      width: calc(100vw - 2rem);
     }
     .label {
       margin: 0 0 0.75rem;
@@ -53,21 +61,145 @@
       color: var(--accent);
       font-variant-numeric: tabular-nums;
     }
+    .userbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 1.75rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+    .userbar .who { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #fff;
+    }
+    .badge.admin { background: var(--badge-admin-bg); }
+    .badge.user { background: var(--badge-user-bg); }
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      padding: 0.5rem 1rem;
+      border-radius: 10px;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    .admin-area {
+      margin-top: 1.75rem;
+      padding-top: 1rem;
+      border-top: 1px dashed var(--border);
+      font-size: 0.85rem;
+      color: var(--muted);
+      text-align: left;
+    }
+    .admin-area h2 {
+      margin: 0 0 0.35rem;
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    .hidden { display: none !important; }
+    .gate p { color: var(--muted); margin: 0.5rem 0 1.5rem; }
   </style>
 </head>
 <body>
   <main class="card">
-    <p class="label">Balance</p>
-    <p class="amount" id="amount"></p>
+    <!-- Shown when logged out -->
+    <section id="gate" class="gate">
+      <p class="label">Money Counter</p>
+      <p>You need to sign in to view this page.</p>
+      <button class="primary" id="login-btn">Log in</button>
+    </section>
+
+    <!-- Shown when logged in -->
+    <section id="app" class="hidden">
+      <div class="userbar">
+        <span class="who" id="who"></span>
+        <span>
+          <span class="badge" id="role-badge"></span>
+          <button id="logout-btn">Log out</button>
+        </span>
+      </div>
+      <p class="label">Balance</p>
+      <p class="amount" id="amount"></p>
+
+      <div class="admin-area hidden" id="admin-area">
+        <h2>Admin</h2>
+        <p>Admin-only controls will go here. (Differences between admin and user accounts to be defined.)</p>
+      </div>
+    </section>
   </main>
+
+  <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
   <script>
-    const value = 750;
-    document.getElementById('amount').textContent =
-      new Intl.NumberFormat('en-GB', {
-        style: 'currency',
-        currency: 'GBP',
-        minimumFractionDigits: 0
+    (function () {
+      var value = 750;
+      var formatted = new Intl.NumberFormat('en-GB', {
+        style: 'currency', currency: 'GBP', minimumFractionDigits: 0
       }).format(value);
+
+      var gate = document.getElementById('gate');
+      var app = document.getElementById('app');
+      var who = document.getElementById('who');
+      var roleBadge = document.getElementById('role-badge');
+      var adminArea = document.getElementById('admin-area');
+      var amountEl = document.getElementById('amount');
+
+      function rolesOf(user) {
+        return (user && user.app_metadata && user.app_metadata.roles) || [];
+      }
+
+      function render(user) {
+        if (!user) {
+          app.classList.add('hidden');
+          gate.classList.remove('hidden');
+          return;
+        }
+        var roles = rolesOf(user);
+        var isAdmin = roles.indexOf('admin') !== -1;
+
+        who.textContent = user.email;
+        roleBadge.textContent = isAdmin ? 'admin' : 'user';
+        roleBadge.className = 'badge ' + (isAdmin ? 'admin' : 'user');
+        amountEl.textContent = formatted;
+        adminArea.classList.toggle('hidden', !isAdmin);
+
+        gate.classList.add('hidden');
+        app.classList.remove('hidden');
+      }
+
+      window.netlifyIdentity.on('init', function (user) { render(user); });
+      window.netlifyIdentity.on('login', function (user) {
+        render(user);
+        window.netlifyIdentity.close();
+      });
+      window.netlifyIdentity.on('logout', function () { render(null); });
+
+      document.getElementById('login-btn').addEventListener('click', function () {
+        window.netlifyIdentity.open('login');
+      });
+      document.getElementById('logout-btn').addEventListener('click', function () {
+        window.netlifyIdentity.logout();
+      });
+
+      window.netlifyIdentity.init();
+    })();
   </script>
 </body>
 </html>
