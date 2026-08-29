@@ -1106,13 +1106,21 @@
       var b = curBal();
       if (!b) return;
       var title = 'History — ' + b.label;
+      var uid = selfId;
       if (amAdmin) {
         var u = usersById[userSelect.value];
-        if (u) title = 'History — ' + u.name + ' · ' + b.label;
+        if (!u) return;
+        uid = u.id;
+        title = 'History — ' + u.name + ' · ' + b.label;
       }
       historyTitle.textContent = title;
-      renderHistory((b.history || []).slice().reverse()); // newest first
+      historyBody.innerHTML = '<p class="empty">Loading…</p>';
       historyModal.classList.remove('hidden');
+      apiJson('/history?userId=' + encodeURIComponent(uid) + '&balanceId=' + encodeURIComponent(b.id))
+        .then(function (res) { renderHistory(res.history); }) // already newest-first
+        .catch(function (err) {
+          historyBody.innerHTML = '<p class="empty">' + (err.message || 'Could not load history.') + '</p>';
+        });
     }
 
     historyBtn.addEventListener('click', openHistory);

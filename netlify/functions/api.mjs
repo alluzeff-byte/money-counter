@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { getStore } from '@netlify/blobs';
 
 // Money Counter API — per-user GBP balances.
 //
-// Auth comes from the Netlify Identity JWT that Netlify decodes into
-// context.clientContext.user. Each user's balances live in their Identity
-// app_metadata.balances = [{ id, label, amount, history[], request|null }].
-// There is no external datastore.
+// Auth comes from the Netlify Identity JWT (context.clientContext.user).
+// Balances live in the user's Identity app_metadata:
+//   balances = [{ id, label, amount, archived, request|null }]
+// Per-balance history lives in Netlify Blobs (store "mc-history", key
+// "<userId>__<balanceId>") so it never bloats the access token.
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -40,12 +42,8 @@ const cleanLabel = (v) => {
   const s = typeof v === 'string' ? v.trim().slice(0, 60) : '';
   return !s || s.toLowerCase() === 'balance' ? 'Balance' : s;
 };
-const cleanComment = (v) => String(v == null ? '' : v).trim().slice(0, 280);
+const cleanComment = (v) => String(v == null ? '' : v).trim().slice(0, 500);
 const nowIso = () => new Date().toISOString();
-
-// Keep per-balance history short: it lives in app_metadata, which is embedded
-// in the user's access token — an oversized token gets rejected at the edge.
-const HISTORY_CAP = 20;
 const gbp = (n) => '£' + (Math.round(num(n) * 100) / 100).toLocaleString('en-GB', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const isEmail = (s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(s || ''));
 const notifyEmailOf = (meta, fallback) => {
@@ -53,7 +51,54 @@ const notifyEmailOf = (meta, fallback) => {
   return e || fallback;
 };
 
-// Normalise one stored balance object.
+// ---- history store (Netlify Blobs) --------------------------------------
+
+const HIST_CAP = 500;
+const SITE_ID = process.env.NETLIFY_BLOBS_SITE_ID || 'e90c937d-8d31-44a2-bc71-895f6783ccaa';
+
+const histStore = () => {
+  const token = process.env.NETLIFY_BLOBS_TOKEN;
+  return token
+    ? getStore({ name: 'mc-history', siteID: SITE_ID, token })
+    : getStore('mc-history'); // implicit context, if Netlify provides it
+};
+const histKey = (userId, balanceId) => `${userId}__${balanceId}`;
+
+const readHist = async (userId, balanceId) => {
+  try {
+    const v = await histStore().get(histKey(userId, balanceId), { type: 'json' });
+    return Array.isArray(v) ? v : [];
+  } catch (e) { console.error('readHist:', e && e.message); return []; }
+};
+const appendHist = async (userId, balanceId, entry) => {
+  try {
+    const s = histStore();
+    const k = histKey(userId, balanceId);
+    const cur = await s.get(k, { type: 'json' }).catch(() => null);
+    const next = (Array.isArray(cur) ? cur : []).concat([entry]).slice(-HIST_CAP);
+    await s.setJSON(k, next);
+  } catch (e) { console.error('appendHist:', e && e.message); }
+};
+const deleteHist = async (userId, balanceId) => {
+  try { await histStore().delete(histKey(userId, balanceId)); } catch (e) { console.error('deleteHist:', e && e.message); }
+};
+// Move any history embedded in old app_metadata balances into Blobs (once).
+const migrateEmbeddedHistory = async (userId, meta) => {
+  const raw = Array.isArray(meta && meta.balances) ? meta.balances : [];
+  await Promise.all(raw.map(async (rb) => {
+    if (!rb || !rb.id || !Array.isArray(rb.history) || !rb.history.length) return;
+    try {
+      const k = histKey(userId, String(rb.id));
+      const existing = await histStore().get(k, { type: 'json' }).catch(() => null);
+      if (!Array.isArray(existing) || !existing.length) {
+        await histStore().setJSON(k, rb.history.slice(-HIST_CAP));
+      }
+    } catch (e) { console.error('migrate hist:', e && e.message); }
+  }));
+};
+
+// ---- balance normalisation --------------------------------------------
+
 const normBalance = (b, i) => {
   const req = b && b.request && typeof b.request === 'object' ? b.request : null;
   return {
@@ -61,7 +106,6 @@ const normBalance = (b, i) => {
     label: cleanLabel(b && b.label),
     amount: money(b && b.amount),
     archived: !!(b && b.archived),
-    history: Array.isArray(b && b.history) ? b.history.slice(-HISTORY_CAP) : [],
     request: req ? {
       amount: money(req.amount),
       comment: cleanComment(req.comment),
@@ -71,23 +115,13 @@ const normBalance = (b, i) => {
   };
 };
 
-// A user's balances as a normalised array. Falls back to the legacy single
-// `balance` / `balanceLabel` fields (and folds any legacy user-level history
-// into the first balance).
 const normBalances = (meta) => {
   const arr = meta && meta.balances;
   if (Array.isArray(arr)) return arr.map(normBalance); // may legitimately be []
-  return [normBalance({
-    id: 'default',
-    label: meta && meta.balanceLabel,
-    amount: meta && meta.balance,
-    history: Array.isArray(meta && meta.history) ? meta.history : [],
-  }, 0)];
+  return [normBalance({ id: 'default', label: meta && meta.balanceLabel, amount: meta && meta.balance }, 0)];
 };
 
-const pushBalHist = (b, entry) => {
-  b.history = (Array.isArray(b.history) ? b.history : []).concat([entry]).slice(-HISTORY_CAP);
-};
+// ---- Identity (GoTrue) fetch -----------------------------------------
 
 const idFetch = async (baseUrl, token, path, init = {}) => {
   const res = await fetch(`${baseUrl}${path}`, {
@@ -117,18 +151,13 @@ export async function handler(event, context) {
   const identity = cc.identity;
 
   if (!user) return json(401, { error: 'Not signed in.' });
-  if (!identity || !identity.url) {
-    return json(500, { error: 'Identity context unavailable.' });
-  }
+  if (!identity || !identity.url) return json(500, { error: 'Identity context unavailable.' });
 
   const bearer = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
   const route = routeOf(event);
   const method = event.httpMethod;
   const admin = isAdminMeta(user.app_metadata);
 
-  // Admin-scoped Identity call. Uses the platform admin token; if that token
-  // is rejected (notably under `netlify dev`, which injects a locally-signed
-  // one), retry with the caller's own token, which carries the admin role.
   const adminFetch = async (path, init) => {
     if (!identity.token) return idFetch(identity.url, bearer, path, init);
     try {
@@ -143,29 +172,26 @@ export async function handler(event, context) {
 
   const getUserById = (userId) => adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
 
-  // Rewrite a user's app_metadata with trimmed balances (history capped,
-  // legacy fields dropped) if that would make it smaller. Long history bloats
-  // the access token, which then gets rejected at the edge. Best-effort.
+  // Strip legacy fields / embedded history from a user's app_metadata.
   const healUser = async (userId, meta) => {
     try {
       if (!meta || typeof meta !== 'object' || isAdminMeta(meta)) return;
-      const hasBalanceData = Array.isArray(meta.balances)
-        || meta.history != null || meta.balance != null || meta.balanceLabel != null;
-      if (!hasBalanceData) return;
+      const hasStuff = Array.isArray(meta.balances) || meta.history != null
+        || meta.balance != null || meta.balanceLabel != null;
+      if (!hasStuff) return;
+      await migrateEmbeddedHistory(userId, meta);
       const cleaned = { ...meta, balances: normBalances(meta) };
       delete cleaned.history;
       delete cleaned.balance;
       delete cleaned.balanceLabel;
-      if (JSON.stringify(cleaned).length >= JSON.stringify(meta).length) return; // already minimal
+      if (JSON.stringify(cleaned).length >= JSON.stringify(meta).length) return;
       await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PUT',
         body: JSON.stringify({ app_metadata: cleaned }),
       });
-    } catch { /* non-fatal */ }
+    } catch (e) { console.error('healUser:', e && e.message); }
   };
 
-  // Email every admin who has enabled notifications, via Resend. No-ops
-  // silently if RESEND_API_KEY is not configured.
   const notifyAdmins = async (subject, text) => {
     const key = process.env.RESEND_API_KEY;
     if (!key) return;
@@ -190,13 +216,12 @@ export async function handler(event, context) {
     });
   };
 
-  // Persist a balances array and return the normalised result. The first
-  // balance is mirrored to the legacy fields for any external reader.
   const saveBalances = async (userId, targetMeta, balances) => {
+    await migrateEmbeddedHistory(userId, targetMeta);
     const merged = { ...(targetMeta || {}), balances };
-    delete merged.balance;        // legacy single-balance fields, no longer used
+    delete merged.balance;
     delete merged.balanceLabel;
-    delete merged.history;        // history now lives per balance
+    delete merged.history;
     const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
       method: 'PUT',
       body: JSON.stringify({ app_metadata: merged }),
@@ -208,20 +233,20 @@ export async function handler(event, context) {
     balances.find((x) => x.id === String(balanceId)) || (balanceId == null ? balances[0] : null);
 
   try {
-    // ---- Any authenticated user ------------------------------------------
+    // ---- Any authenticated user ---------------------------------------
 
-    // GET /me — the caller's own record (fresh, via their own token)
+    // GET /me — the caller's own record
     if (route === '/me' && method === 'GET') {
       let meta = user.app_metadata || {};
       let fetched = false;
       try {
         const fresh = await idFetch(identity.url, bearer, '/user');
         if (fresh && fresh.app_metadata) { meta = fresh.app_metadata; fetched = true; }
-      } catch { /* fall back to JWT copy */ }
+      } catch { /* fall back to the token copy */ }
 
       let balances = [];
       try { balances = normBalances(meta); }
-      catch (e) { console.error('normBalances(/me) failed:', e && e.stack || e); }
+      catch (e) { console.error('normBalances(/me):', (e && e.stack) || e); }
 
       if (fetched) await healUser(user.sub, meta);
 
@@ -236,9 +261,18 @@ export async function handler(event, context) {
       });
     }
 
-    // POST /request { balanceId, amount, comment } — the caller asks for a
-    // top-up on one of their own balances. Persisted with the admin token
-    // because users cannot write their own app_metadata.
+    // GET /history?userId=&balanceId=  — one balance's audit trail, newest first
+    if (route === '/history' && method === 'GET') {
+      const q = event.queryStringParameters || {};
+      const userId = q.userId || user.sub;
+      const balanceId = q.balanceId;
+      if (!balanceId) return json(400, { error: 'balanceId is required.' });
+      if (userId !== user.sub && !admin) return json(403, { error: 'Not allowed.' });
+      const hist = await readHist(userId, balanceId);
+      return json(200, { userId, balanceId, history: hist.slice().reverse() });
+    }
+
+    // POST /request { balanceId, amount, comment } — caller asks for a top-up
     if (route === '/request' && method === 'POST') {
       const { balanceId, amount, comment } = readBody(event);
       const n = Number(amount);
@@ -251,22 +285,19 @@ export async function handler(event, context) {
       if (!b) return json(404, { error: 'Balance not found.' });
 
       const c = cleanComment(comment);
-      // A request is not a history event — only its approval/rejection is.
       b.request = { amount: money(n), comment: c, at: nowIso(), by: user.email };
       const out = await saveBalances(user.sub, target.app_metadata, balances);
 
-      // Best-effort email notification to subscribed admins.
       await notifyAdmins(
         `Top-up request: ${gbp(b.request.amount)} on "${b.label}"`,
         `${user.email} requested a top-up of ${gbp(b.request.amount)} on "${b.label}".\n\n`
-        + `Comment: ${c || '(none)'}\n\n`
-        + `Review it in the admin console.`,
+        + `Comment: ${c || '(none)'}\n\nReview it in the admin console.`,
       ).catch(() => {});
 
       return json(200, { balances: out });
     }
 
-    // ---- Admin only -----------------------------------------------------
+    // ---- Admin only -------------------------------------------------
     if (!admin) return json(403, { error: 'Admin only.' });
     if (!identity.token && !bearer) return json(500, { error: 'No usable Identity token.' });
 
@@ -279,7 +310,7 @@ export async function handler(event, context) {
       return target;
     };
 
-    // GET /users — all users with their balances
+    // GET /users
     if (route === '/users' && method === 'GET') {
       const perPage = 200;
       let users = [];
@@ -298,10 +329,7 @@ export async function handler(event, context) {
         balances: normBalances(u.app_metadata),
       }));
       rows.sort((a, b) => a.name.localeCompare(b.name));
-
-      // Shrink any users whose history has bloated their token.
       await Promise.all(users.map((u) => healUser(u.id, u.app_metadata)));
-
       return json(200, { users: rows });
     }
 
@@ -311,45 +339,41 @@ export async function handler(event, context) {
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
       const nb = normBalance({ id: randomUUID(), label: 'Balance', amount: 0 }, balances.length);
-      pushBalHist(nb, { at: nowIso(), by: user.email, type: 'created' });
       balances.push(nb);
       const out = await saveBalances(userId, target.app_metadata, balances);
+      await appendHist(userId, nb.id, { at: nowIso(), by: user.email, type: 'created' });
       return json(200, { userId, balances: out });
     }
 
-    // POST /balance-archive { userId, balanceId } — move a balance to Archived
+    // POST /balance-archive { userId, balanceId }
     if (route === '/balance-archive' && method === 'POST') {
       const { userId, balanceId } = readBody(event);
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
       const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
-      if (!b.archived) {
-        b.archived = true;
-        b.request = null;
-        pushBalHist(b, { at: nowIso(), by: user.email, type: 'archived' });
-      }
+      let changed = false;
+      if (!b.archived) { b.archived = true; b.request = null; changed = true; }
       const out = await saveBalances(userId, target.app_metadata, balances);
+      if (changed) await appendHist(userId, b.id, { at: nowIso(), by: user.email, type: 'archived' });
       return json(200, { userId, balances: out });
     }
 
-    // POST /balance-restore { userId, balanceId } — move a balance back to Actual
+    // POST /balance-restore { userId, balanceId }
     if (route === '/balance-restore' && method === 'POST') {
       const { userId, balanceId } = readBody(event);
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
       const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
-      if (b.archived) {
-        b.archived = false;
-        pushBalHist(b, { at: nowIso(), by: user.email, type: 'restored' });
-      }
+      let changed = false;
+      if (b.archived) { b.archived = false; changed = true; }
       const out = await saveBalances(userId, target.app_metadata, balances);
+      if (changed) await appendHist(userId, b.id, { at: nowIso(), by: user.email, type: 'restored' });
       return json(200, { userId, balances: out });
     }
 
-    // POST /balance-delete { userId, balanceId } — permanently remove an
-    // archived balance
+    // POST /balance-delete { userId, balanceId } — remove an archived balance
     if (route === '/balance-delete' && method === 'POST') {
       const { userId, balanceId } = readBody(event);
       const target = await loadManagedUser(userId);
@@ -359,11 +383,11 @@ export async function handler(event, context) {
       if (!balances[i].archived) return json(400, { error: 'Only archived balances can be deleted.' });
       balances.splice(i, 1);
       const out = await saveBalances(userId, target.app_metadata, balances);
+      await deleteHist(userId, String(balanceId));
       return json(200, { userId, balances: out });
     }
 
-    // PUT /balance { userId, balanceId, amount, mode } — set (absolute) or
-    // adjust (mode: "delta", amount may be negative) one balance's amount
+    // PUT /balance { userId, balanceId, amount, mode }
     if (route === '/balance' && method === 'PUT') {
       const { userId, balanceId, amount, mode } = readBody(event);
       const n = Number(amount);
@@ -376,22 +400,23 @@ export async function handler(event, context) {
       const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
 
-      const raw = delta ? b.amount + n : n;
-      const next = Math.round(raw * 100) / 100;
+      const next = Math.round((delta ? b.amount + n : n) * 100) / 100;
       if (next < 0) return json(400, { error: 'That change would make the balance negative.' });
 
+      let entry = null;
       if (b.amount !== next) {
         const prev = b.amount;
         b.amount = next;
-        pushBalHist(b, delta
+        entry = delta
           ? { at: nowIso(), by: user.email, type: 'adjusted', delta: Math.round(n * 100) / 100, from: prev, to: next }
-          : { at: nowIso(), by: user.email, type: 'set', from: prev, to: next });
+          : { at: nowIso(), by: user.email, type: 'set', from: prev, to: next };
       }
       const out = await saveBalances(userId, target.app_metadata, balances);
+      if (entry) await appendHist(userId, b.id, entry);
       return json(200, { userId, balances: out });
     }
 
-    // PUT /balance-label { userId, balanceId, label } — rename one balance
+    // PUT /balance-label { userId, balanceId, label }
     if (route === '/balance-label' && method === 'PUT') {
       const { userId, balanceId, label } = readBody(event);
       const target = await loadManagedUser(userId);
@@ -399,16 +424,18 @@ export async function handler(event, context) {
       const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
       const next = cleanLabel(label);
+      let entry = null;
       if (b.label !== next) {
         const prev = b.label;
         b.label = next;
-        pushBalHist(b, { at: nowIso(), by: user.email, type: 'renamed', from: prev, to: next });
+        entry = { at: nowIso(), by: user.email, type: 'renamed', from: prev, to: next };
       }
       const out = await saveBalances(userId, target.app_metadata, balances);
+      if (entry) await appendHist(userId, b.id, entry);
       return json(200, { userId, balances: out });
     }
 
-    // POST /approve { userId, balanceId, comment } — grant a pending top-up
+    // POST /approve { userId, balanceId, comment }
     if (route === '/approve' && method === 'POST') {
       const { userId, balanceId, comment } = readBody(event);
       const target = await loadManagedUser(userId);
@@ -420,16 +447,16 @@ export async function handler(event, context) {
       const req = b.request;
       const c = comment == null ? req.comment : cleanComment(comment);
       b.amount = money(b.amount + req.amount);
-      pushBalHist(b, {
+      b.request = null;
+      const out = await saveBalances(userId, target.app_metadata, balances);
+      await appendHist(userId, b.id, {
         at: nowIso(), by: user.email, type: 'topup-approved',
         amount: req.amount, comment: c, requestedBy: req.by, total: b.amount,
       });
-      b.request = null;
-      const out = await saveBalances(userId, target.app_metadata, balances);
       return json(200, { userId, balances: out });
     }
 
-    // POST /reject { userId, balanceId, comment } — decline a pending top-up
+    // POST /reject { userId, balanceId, comment }
     if (route === '/reject' && method === 'POST') {
       const { userId, balanceId, comment } = readBody(event);
       const target = await loadManagedUser(userId);
@@ -440,21 +467,20 @@ export async function handler(event, context) {
 
       const req = b.request;
       const c = comment == null ? req.comment : cleanComment(comment);
-      pushBalHist(b, {
+      b.request = null;
+      const out = await saveBalances(userId, target.app_metadata, balances);
+      await appendHist(userId, b.id, {
         at: nowIso(), by: user.email, type: 'topup-rejected',
         amount: req.amount, comment: c, requestedBy: req.by,
       });
-      b.request = null;
-      const out = await saveBalances(userId, target.app_metadata, balances);
       return json(200, { userId, balances: out });
     }
 
-    // PUT /name { userId, name } — assign a display name (blank/email clears it)
+    // PUT /name { userId, name }
     if (route === '/name' && method === 'PUT') {
       const { userId, name } = readBody(event);
       if (!userId) return json(400, { error: 'userId is required.' });
       const clean = typeof name === 'string' ? name.trim().slice(0, 120) : '';
-
       const target = await getUserById(userId);
       const email = target.email;
       const merged = { ...(target.app_metadata || {}) };
@@ -467,13 +493,11 @@ export async function handler(event, context) {
       return json(200, { userId, name: nameOf(updated.app_metadata, email), email });
     }
 
-    // PUT /notify { email, enabled } — the calling admin's own notification
-    // settings (recipient address + on/off)
+    // PUT /notify { email, enabled } — the calling admin's own settings
     if (route === '/notify' && method === 'PUT') {
       const { email, enabled } = readBody(event);
       const clean = typeof email === 'string' ? email.trim().slice(0, 200) : '';
       if (clean && !isEmail(clean)) return json(400, { error: 'Enter a valid email address.' });
-
       const me = await getUserById(user.sub);
       const merged = { ...(me.app_metadata || {}) };
       if (clean) merged.notifyEmail = clean; else delete merged.notifyEmail;
@@ -488,7 +512,7 @@ export async function handler(event, context) {
       });
     }
 
-    // POST /invite { email } — send a Netlify Identity invite
+    // POST /invite { email }
     if (route === '/invite' && method === 'POST') {
       const { email } = readBody(event);
       if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
