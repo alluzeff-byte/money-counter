@@ -318,10 +318,14 @@ export async function handler(event, context) {
       b.requests = [...b.requests, { id: randomUUID(), amount: reqAmount, comment: c, at: nowIso(), by: user.email }].slice(-25);
       const out = await saveBalances(user.sub, target.app_metadata, balances);
 
+      const appUrl = process.env.URL
+        || (identity.url || '').replace(/\/\.netlify\/identity\/?$/, '')
+        || 'https://money-counter-kids.netlify.app';
       await notifyAdmins(
         `Top-up request: ${gbp(reqAmount)} on "${b.label}"`,
         `${user.email} requested a top-up of ${gbp(reqAmount)} on "${b.label}".\n\n`
-        + `Comment: ${c || '(none)'}\n\nReview it in the admin console.`,
+        + `Comment: ${c || '(none)'}\n\n`
+        + `Review it in the admin console:\n${appUrl}`,
       ).catch(() => {});
 
       return json(200, { balances: out });
