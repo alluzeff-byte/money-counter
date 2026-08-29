@@ -207,14 +207,16 @@
         p.style.color = '#c0392b';
         p.style.fontSize = '0.8rem';
         p.style.marginTop = '1rem';
-        p.textContent = 'The login service (identity.netlify.com) could not load — ' +
-          'a browser ad/content blocker or strict privacy mode is the usual cause. ' +
-          'Allow it for this site, or try a private window, then reload.';
+        p.textContent = 'The login widget could not load or start. Try a hard reload ' +
+          '(Ctrl+Shift+R); if it persists, a browser extension may be interfering — ' +
+          'test in a private window.';
         gate.appendChild(p);
       }
 
       var s = document.createElement('script');
-      s.src = 'https://identity.netlify.com/v1/netlify-identity-widget.js';
+      // Self-hosted (same origin) so ad/content blockers targeting
+      // identity.netlify.com can't stop the login widget from loading.
+      s.src = 'vendor/netlify-identity-widget.js';
       s.onload = function () {
         var ni = window.netlifyIdentity;
         if (!ni) { showAuthError(); return; }
