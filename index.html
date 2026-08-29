@@ -341,7 +341,11 @@
     function apiJson(path, opts) {
       return api(path, opts).then(function (r) {
         return r.json().catch(function () { return {}; }).then(function (d) {
-          if (!r.ok) throw new Error(d.error || ('Request failed (' + r.status + ').'));
+          if (!r.ok) {
+            var e = new Error(d.error || ('Request failed (' + r.status + ').'));
+            e.status = r.status;
+            throw e;
+          }
           return d;
         });
       });
@@ -375,10 +379,14 @@
         }
         adminArea.classList.add('hidden');
       }).catch(function (err) {
-        // Session no longer valid — back to the login form.
-        clearTokens();
         showGate();
-        showError(err.message || 'Could not load your account.');
+        if (err.status === 401) {
+          clearTokens();
+          showError('Your session expired. Please sign in again.');
+        } else {
+          // Keep the session so a reload can retry.
+          showError((err.message || 'Could not load your account.') + ' Try reloading.');
+        }
       });
     }
 

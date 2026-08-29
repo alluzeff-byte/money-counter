@@ -1,6 +1,8 @@
-import { getStore } from '@netlify/blobs';
-
-// ---- helpers ---------------------------------------------------------------
+// Money Counter API — per-user GBP balances.
+//
+// Auth comes from the Netlify Identity JWT that Netlify decodes into
+// context.clientContext.user. Balances are stored in each user's Identity
+// app_metadata.balance (admin-writable), so there is no external datastore.
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -16,30 +18,25 @@ const readBody = (event) => {
   try { return JSON.parse(raw); } catch { return {}; }
 };
 
-// Route path, with the /api or function prefix stripped.
 const routeOf = (event) => {
   let p = event.path || '';
   p = p.replace(/^\/\.netlify\/functions\/api/, '').replace(/^\/api/, '');
   return p.replace(/\/+$/, '') || '/';
 };
 
-const rolesOf = (user) =>
-  (user && user.app_metadata && user.app_metadata.roles) || [];
-const isAdmin = (user) => rolesOf(user).indexOf('admin') !== -1;
-
-const store = () => getStore('balances');
-
-const getBalance = async (userId) => {
-  const rec = await store().get(userId, { type: 'json' });
-  return rec && typeof rec.balance === 'number' ? rec.balance : 0;
+const rolesOf = (meta) => (meta && meta.roles) || [];
+const balanceOf = (meta) => {
+  const b = meta && meta.balance;
+  return typeof b === 'number' && isFinite(b) ? b : 0;
 };
 
-// Netlify Identity admin API (uses the short-lived admin token from context).
-const identityFetch = async (identity, path, init = {}) => {
-  const res = await fetch(`${identity.url}${path}`, {
+// Call the Netlify Identity (GoTrue) API. `token` is either the caller's
+// access token (for /user) or the admin token from clientContext.identity.
+const idFetch = async (baseUrl, token, path, init = {}) => {
+  const res = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${identity.token}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       ...(init.headers || {}),
     },
@@ -49,12 +46,12 @@ const identityFetch = async (identity, path, init = {}) => {
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
     const msg = (data && (data.msg || data.error_description || data.error)) || `Identity ${res.status}`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
   return data;
 };
-
-// ---- handler -------------------------------------------------------------
 
 export async function handler(event, context) {
   const cc = context.clientContext || {};
@@ -62,69 +59,74 @@ export async function handler(event, context) {
   const identity = cc.identity;
 
   if (!user) return json(401, { error: 'Not signed in.' });
+  if (!identity || !identity.url) {
+    return json(500, { error: 'Identity context unavailable.' });
+  }
 
+  const bearer = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
   const route = routeOf(event);
   const method = event.httpMethod;
-  const admin = isAdmin(user);
+  const admin = rolesOf(user.app_metadata).indexOf('admin') !== -1;
 
   try {
-    // GET /me  -> the caller's own view
+    // GET /me — the caller's own record (fresh, via their own token)
     if (route === '/me' && method === 'GET') {
+      let meta = user.app_metadata || {};
+      try {
+        const fresh = await idFetch(identity.url, bearer, '/user');
+        if (fresh && fresh.app_metadata) meta = fresh.app_metadata;
+      } catch { /* fall back to JWT copy */ }
       return json(200, {
         id: user.sub,
         email: user.email,
-        isAdmin: admin,
-        balance: await getBalance(user.sub),
+        isAdmin: rolesOf(meta).indexOf('admin') !== -1,
+        balance: balanceOf(meta),
       });
     }
 
-    // Everything below is admin-only.
+    // Everything below requires admin + the admin token.
     if (!admin) return json(403, { error: 'Admin only.' });
-    if (!identity || !identity.url || !identity.token) {
-      return json(500, { error: 'Identity admin context unavailable.' });
-    }
+    if (!identity.token) return json(500, { error: 'Identity admin token unavailable.' });
 
-    // GET /users -> every user with their balance
+    // GET /users — all users with balances
     if (route === '/users' && method === 'GET') {
-      const data = await identityFetch(identity, '/admin/users?per_page=1000');
+      const data = await idFetch(identity.url, identity.token, '/admin/users?per_page=1000');
       const users = (data && data.users) || [];
-      const rows = await Promise.all(
-        users.map(async (u) => ({
-          id: u.id,
-          email: u.email,
-          isAdmin: (u.app_metadata && u.app_metadata.roles || []).indexOf('admin') !== -1,
-          confirmed: !!u.confirmed_at,
-          balance: await getBalance(u.id),
-        })),
-      );
+      const rows = users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        isAdmin: rolesOf(u.app_metadata).indexOf('admin') !== -1,
+        confirmed: !!u.confirmed_at,
+        balance: balanceOf(u.app_metadata),
+      }));
       rows.sort((a, b) => a.email.localeCompare(b.email));
       return json(200, { users: rows });
     }
 
-    // PUT /balance  { userId, balance } -> set a user's balance
+    // PUT /balance { userId, balance } — set a user's balance
     if (route === '/balance' && method === 'PUT') {
       const { userId, balance } = readBody(event);
       if (!userId) return json(400, { error: 'userId is required.' });
       const n = Number(balance);
-      if (!Number.isFinite(n) || n < 0) {
-        return json(400, { error: 'balance must be a number >= 0.' });
-      }
+      if (!isFinite(n) || n < 0) return json(400, { error: 'balance must be a number >= 0.' });
       const rounded = Math.round(n * 100) / 100;
-      await store().setJSON(userId, {
-        balance: rounded,
-        updatedAt: new Date().toISOString(),
-        updatedBy: user.email,
+
+      const target = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`);
+      const merged = { ...(target.app_metadata || {}), balance: rounded };
+      const updated = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ app_metadata: merged }),
       });
-      return json(200, { userId, balance: rounded });
+      return json(200, { userId, balance: balanceOf(updated.app_metadata) });
     }
 
-    // POST /invite  { email } -> send a Netlify Identity invite
+    // POST /invite { email } — send a Netlify Identity invite
     if (route === '/invite' && method === 'POST') {
       const { email } = readBody(event);
       if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
         return json(400, { error: 'A valid email is required.' });
       }
-      await identityFetch(identity, '/invite', {
+      await idFetch(identity.url, identity.token, '/invite', {
         method: 'POST',
         body: JSON.stringify({ email: email.toLowerCase() }),
       });
@@ -133,6 +135,6 @@ export async function handler(event, context) {
 
     return json(404, { error: `No route for ${method} ${route}` });
   } catch (err) {
-    return json(500, { error: err.message || 'Server error.' });
+    return json(err.status && err.status < 500 ? err.status : 500, { error: err.message || 'Server error.' });
   }
 }
