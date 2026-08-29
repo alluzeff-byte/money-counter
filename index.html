@@ -529,6 +529,9 @@
     };
 
     var $ = function (id) { return document.getElementById(id); };
+    function whoLabel(name, email) {
+      return (name && name !== email) ? (name + ' (' + email + ')') : (email || name || '');
+    }
     var gate = $('gate'), app = $('app');
     var who = $('who'), roleBadge = $('role-badge'), amountEl = $('amount'), balanceSub = $('balance-sub');
     var balanceLabelEl = $('balance-label');
@@ -1006,7 +1009,7 @@
 
       return apiJson('/me').then(function (me) {
         selfId = me.id;
-        who.textContent = me.name || me.email;
+        who.textContent = whoLabel(me.name, me.email);
         roleBadge.textContent = me.isAdmin ? 'admin' : 'user';
         roleBadge.className = 'badge ' + (me.isAdmin ? 'admin' : 'user');
 
@@ -1396,7 +1399,7 @@
       nameStatus.className = 'msg';
       apiJson('/name', jsonReq({ userId: u.id, name: newName }, 'PUT'))
         .then(function (res) {
-          if (u.id === selfId) who.textContent = res.name;
+          if (u.id === selfId) who.textContent = whoLabel(res.name, res.email);
           nameStatus.textContent = 'Saved. Name is now “' + res.name + '”.';
           nameStatus.className = 'msg ok';
           return loadUsers();
