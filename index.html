@@ -395,7 +395,10 @@
         </div>
         <p class="sub" id="balance-sub"></p>
         <p class="note hidden" id="no-balance-msg"></p>
-        <button type="button" id="history-btn" class="linkish hidden">History</button>
+        <span>
+          <button type="button" id="history-btn" class="linkish hidden">History</button>
+          <button type="button" id="account-btn" class="linkish hidden">Account log</button>
+        </span>
 
         <div id="request-box" class="panel-box hidden">
           <span class="box-title">Request a top-up</span>
@@ -545,7 +548,7 @@
     var adminTabs = $('admin-tabs'), balanceSection = $('balance-section');
     var nameUserSelect = $('name-user-select'), nameInput = $('name-input'), saveNameBtn = $('save-name-btn'), nameStatus = $('name-status');
     var notifyEmailInput = $('notify-email'), notifyEnabledInput = $('notify-enabled'), notifySaveBtn = $('notify-save'), notifyStatus = $('notify-status');
-    var historyBtn = $('history-btn'), historyModal = $('history-modal'), historyBody = $('history-body');
+    var historyBtn = $('history-btn'), accountBtn = $('account-btn'), historyModal = $('history-modal'), historyBody = $('history-body');
     var historyTitle = $('history-title'), historyClose = $('history-close'), historyExport = $('history-export');
     var requestBox = $('request-box'), requestPending = $('request-pending'), requestAmount = $('request-amount');
     var requestComment = $('request-comment'), requestSubmit = $('request-submit'), requestStatus = $('request-status');
@@ -734,6 +737,7 @@
       balMinus.setAttribute('aria-label', archived ? 'Delete balance' : 'Archive balance');
       balMinus.title = archived ? 'Delete permanently' : 'Move to Archived';
       if (balViewPicker) balViewPicker.classList.toggle('hidden', !adminWithUser);
+      accountBtn.classList.toggle('hidden', !adminWithUser);
       // The Set-balance editor and top-up review only apply to Actual balances.
       balanceEditor.classList.toggle('hidden', !(adminWithUser && balView === 'actual' && hasVisible));
       if (balView === 'archived') reviewBox.classList.add('hidden');
@@ -1033,6 +1037,7 @@
         balanceLabelEl.classList.remove('editable');
         balanceLabelEl.removeAttribute('title');
         requestBox.classList.remove('hidden');
+        accountBtn.classList.remove('hidden');
         setBalances(me.balances, 'Your balance');
         adminTabs.classList.add('hidden');
         adminArea.classList.add('hidden');
@@ -1144,11 +1149,13 @@
 
     // { amt: {text, cls} | null, desc: string, total: number | null, comment }
     function histParts(e) {
+      var lbl = e.label ? '“' + e.label + '” ' : ''; // present on account-log entries
       switch (e.type) {
-        case 'created': return { desc: 'balance created' };
+        case 'created': return { desc: lbl + 'balance created' };
         case 'renamed': return { desc: 'renamed: ' + quote(e.from) + ' → ' + quote(e.to) };
-        case 'archived': return { desc: 'moved to Archived' };
-        case 'restored': return { desc: 'restored to Actual' };
+        case 'archived': return { desc: lbl + 'moved to Archived' };
+        case 'restored': return { desc: lbl + 'restored to Actual' };
+        case 'deleted': return { desc: lbl + 'balance deleted' + (typeof e.amount === 'number' ? ' (' + fmt(e.amount) + ')' : '') };
         case 'set': return { desc: 'balance set: ' + fmt(e.from) + ' → ' + fmt(e.to), comment: e.comment };
         case 'adjusted': {
           var d = Number(e.delta) || 0;
@@ -1240,6 +1247,31 @@
         });
     }
 
+    function openAccount() {
+      var uid = selfId, name = 'you';
+      if (amAdmin) {
+        var u = usersById[userSelect.value];
+        if (!u) return;
+        uid = u.id; name = u.name;
+      }
+      historyName = name + ' account';
+      historyEntries = [];
+      historyExport.classList.toggle('hidden', !amAdmin);
+      historyExport.disabled = true;
+      historyTitle.textContent = 'Account log — ' + name;
+      historyBody.innerHTML = '<p class="empty">Loading…</p>';
+      historyModal.classList.remove('hidden');
+      apiJson('/account?userId=' + encodeURIComponent(uid))
+        .then(function (res) {
+          historyEntries = res.history || [];
+          historyExport.disabled = !historyEntries.length;
+          renderHistory(historyEntries);
+        })
+        .catch(function (err) {
+          historyBody.innerHTML = '<p class="empty">' + (err.message || 'Could not load.') + '</p>';
+        });
+    }
+
     // ---- history export to a spreadsheet ----
     function stripMarks(s) {
       return String(s == null ? '' : s).replace(COMMENT_RE, function (_, a, b, c, d) {
@@ -1247,15 +1279,17 @@
       });
     }
     function xlChange(e) {
+      var lbl = e.label ? '“' + e.label + '” ' : '';
       switch (e.type) {
         case 'adjusted': { var d = Number(e.delta) || 0; return (d >= 0 ? '+' : '−') + fmt(Math.abs(d)); }
         case 'topup-approved': return '+' + fmt(e.amount);
         case 'set': return fmt(e.from) + ' → ' + fmt(e.to);
         case 'topup-rejected': return 'rejected ' + fmt(e.amount);
         case 'renamed': return 'renamed “' + e.from + '” → “' + e.to + '”';
-        case 'archived': return 'archived';
-        case 'restored': return 'restored';
-        case 'created': return 'created';
+        case 'archived': return lbl + 'archived';
+        case 'restored': return lbl + 'restored';
+        case 'created': return lbl + 'created';
+        case 'deleted': return lbl + 'deleted' + (typeof e.amount === 'number' ? ' ' + fmt(e.amount) : '');
         default: return e.type || '';
       }
     }
@@ -1289,6 +1323,7 @@
     historyExport.addEventListener('click', exportHistory);
 
     historyBtn.addEventListener('click', openHistory);
+    accountBtn.addEventListener('click', openAccount);
     historyClose.addEventListener('click', closeHistory);
     historyModal.addEventListener('click', function (e) {
       if (e.target === historyModal) closeHistory();
