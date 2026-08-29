@@ -40,8 +40,12 @@ const cleanLabel = (v) => {
   const s = typeof v === 'string' ? v.trim().slice(0, 60) : '';
   return !s || s.toLowerCase() === 'balance' ? 'Balance' : s;
 };
-const cleanComment = (v) => String(v == null ? '' : v).trim().slice(0, 500);
+const cleanComment = (v) => String(v == null ? '' : v).trim().slice(0, 280);
 const nowIso = () => new Date().toISOString();
+
+// Keep per-balance history short: it lives in app_metadata, which is embedded
+// in the user's access token — an oversized token gets rejected at the edge.
+const HISTORY_CAP = 20;
 const gbp = (n) => '£' + (Math.round(num(n) * 100) / 100).toLocaleString('en-GB', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const isEmail = (s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(s || ''));
 const notifyEmailOf = (meta, fallback) => {
@@ -57,7 +61,7 @@ const normBalance = (b, i) => {
     label: cleanLabel(b && b.label),
     amount: money(b && b.amount),
     archived: !!(b && b.archived),
-    history: Array.isArray(b && b.history) ? b.history.slice(-100) : [],
+    history: Array.isArray(b && b.history) ? b.history.slice(-HISTORY_CAP) : [],
     request: req ? {
       amount: money(req.amount),
       comment: cleanComment(req.comment),
@@ -82,12 +86,13 @@ const normBalances = (meta) => {
 };
 
 const pushBalHist = (b, entry) => {
-  b.history = (Array.isArray(b.history) ? b.history : []).concat([entry]).slice(-100);
+  b.history = (Array.isArray(b.history) ? b.history : []).concat([entry]).slice(-HISTORY_CAP);
 };
 
 const idFetch = async (baseUrl, token, path, init = {}) => {
   const res = await fetch(`${baseUrl}${path}`, {
     ...init,
+    signal: init.signal || AbortSignal.timeout(7000),
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
@@ -138,6 +143,23 @@ export async function handler(event, context) {
 
   const getUserById = (userId) => adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
 
+  // If a user's stored app_metadata has grown large (long history bloats the
+  // access token, which then gets rejected at the edge), rewrite it with
+  // trimmed balances. Best-effort; never throws.
+  const healUser = async (userId, meta) => {
+    try {
+      if (!meta) return;
+      const size = JSON.stringify(meta.balances || meta.history || 0).length;
+      if (size < 3500 && !meta.history) return;
+      const cleaned = { ...meta, balances: normBalances(meta) };
+      delete cleaned.history;
+      await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ app_metadata: cleaned }),
+      });
+    } catch { /* non-fatal */ }
+  };
+
   // Email every admin who has enabled notifications, via Resend. No-ops
   // silently if RESEND_API_KEY is not configured.
   const notifyAdmins = async (subject, text) => {
@@ -153,6 +175,7 @@ export async function handler(event, context) {
     if (!recipients.length) return;
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
+      signal: AbortSignal.timeout(7000),
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         from: process.env.NOTIFY_FROM || 'Money Counter <onboarding@resend.dev>',
@@ -186,10 +209,18 @@ export async function handler(event, context) {
     // GET /me — the caller's own record (fresh, via their own token)
     if (route === '/me' && method === 'GET') {
       let meta = user.app_metadata || {};
+      let fetched = false;
       try {
         const fresh = await idFetch(identity.url, bearer, '/user');
-        if (fresh && fresh.app_metadata) meta = fresh.app_metadata;
+        if (fresh && fresh.app_metadata) { meta = fresh.app_metadata; fetched = true; }
       } catch { /* fall back to JWT copy */ }
+
+      let balances = [];
+      try { balances = normBalances(meta); }
+      catch (e) { console.error('normBalances(/me) failed:', e && e.stack || e); }
+
+      if (fetched) await healUser(user.sub, meta);
+
       return json(200, {
         id: user.sub,
         email: user.email,
@@ -197,7 +228,7 @@ export async function handler(event, context) {
         isAdmin: isAdminMeta(meta),
         notifyEmail: notifyEmailOf(meta, user.email),
         notifyEnabled: !!(meta && meta.notifyEnabled),
-        balances: normBalances(meta),
+        balances,
       });
     }
 
@@ -263,6 +294,10 @@ export async function handler(event, context) {
         balances: normBalances(u.app_metadata),
       }));
       rows.sort((a, b) => a.name.localeCompare(b.name));
+
+      // Shrink any users whose history has bloated their token.
+      await Promise.all(users.map((u) => healUser(u.id, u.app_metadata)));
+
       return json(200, { users: rows });
     }
 
@@ -462,6 +497,7 @@ export async function handler(event, context) {
 
     return json(404, { error: `No route for ${method} ${route}` });
   } catch (err) {
-    return json(err.status && err.status < 500 ? err.status : 500, { error: err.message || 'Server error.' });
+    console.error('api handler error:', (err && err.stack) || err);
+    return json(err.status && err.status < 500 ? err.status : 500, { error: (err && err.message) || 'Server error.' });
   }
 }
