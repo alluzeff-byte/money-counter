@@ -121,7 +121,7 @@
 <body>
   <main class="card">
     <!-- Shown when logged out -->
-    <section id="gate" class="gate">
+    <section id="gate" class="gate hidden">
       <p class="label">Money Counter</p>
       <p>You need to sign in to view this page.</p>
       <button class="primary" id="login-btn">Log in</button>
@@ -146,60 +146,84 @@
     </section>
   </main>
 
-  <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
   <script>
-    (function () {
-      var value = 750;
-      var formatted = new Intl.NumberFormat('en-GB', {
-        style: 'currency', currency: 'GBP', minimumFractionDigits: 0
-      }).format(value);
+  (function () {
+    var value = 750;
+    var formatted = new Intl.NumberFormat('en-GB', {
+      style: 'currency', currency: 'GBP', minimumFractionDigits: 0
+    }).format(value);
 
-      var gate = document.getElementById('gate');
-      var app = document.getElementById('app');
-      var who = document.getElementById('who');
-      var roleBadge = document.getElementById('role-badge');
-      var adminArea = document.getElementById('admin-area');
-      var amountEl = document.getElementById('amount');
+    var gate = document.getElementById('gate');
+    var app = document.getElementById('app');
+    var who = document.getElementById('who');
+    var roleBadge = document.getElementById('role-badge');
+    var adminArea = document.getElementById('admin-area');
+    var amountEl = document.getElementById('amount');
+    var loginBtn = document.getElementById('login-btn');
+    var logoutBtn = document.getElementById('logout-btn');
 
-      function rolesOf(user) {
-        return (user && user.app_metadata && user.app_metadata.roles) || [];
+    // Normalised session: null, or { email, isAdmin }
+    function render(session) {
+      if (!session) {
+        app.classList.add('hidden');
+        gate.classList.remove('hidden');
+        return;
       }
+      who.textContent = session.email;
+      roleBadge.textContent = session.isAdmin ? 'admin' : 'user';
+      roleBadge.className = 'badge ' + (session.isAdmin ? 'admin' : 'user');
+      amountEl.textContent = formatted;
+      adminArea.classList.toggle('hidden', !session.isAdmin);
+      gate.classList.add('hidden');
+      app.classList.remove('hidden');
+    }
 
-      function render(user) {
-        if (!user) {
-          app.classList.add('hidden');
-          gate.classList.remove('hidden');
-          return;
+    var host = location.hostname;
+    var useNetlifyIdentity = /(^|\.)netlify\.app$/.test(host) || host === 'localhost' || host === '127.0.0.1';
+
+    if (useNetlifyIdentity) {
+      // ---- Netlify Identity (Netlify deployment) ----
+      var s = document.createElement('script');
+      s.src = 'https://identity.netlify.com/v1/netlify-identity-widget.js';
+      s.onload = function () {
+        var ni = window.netlifyIdentity;
+        function toSession(user) {
+          if (!user) return null;
+          var roles = (user.app_metadata && user.app_metadata.roles) || [];
+          return { email: user.email, isAdmin: roles.indexOf('admin') !== -1 };
         }
-        var roles = rolesOf(user);
-        var isAdmin = roles.indexOf('admin') !== -1;
-
-        who.textContent = user.email;
-        roleBadge.textContent = isAdmin ? 'admin' : 'user';
-        roleBadge.className = 'badge ' + (isAdmin ? 'admin' : 'user');
-        amountEl.textContent = formatted;
-        adminArea.classList.toggle('hidden', !isAdmin);
-
-        gate.classList.add('hidden');
-        app.classList.remove('hidden');
-      }
-
-      window.netlifyIdentity.on('init', function (user) { render(user); });
-      window.netlifyIdentity.on('login', function (user) {
-        render(user);
-        window.netlifyIdentity.close();
+        ni.on('init', function (user) { render(toSession(user)); });
+        ni.on('login', function (user) { render(toSession(user)); ni.close(); });
+        ni.on('logout', function () { render(null); });
+        loginBtn.addEventListener('click', function () { ni.open('login'); });
+        logoutBtn.addEventListener('click', function () { ni.logout(); });
+        ni.init();
+      };
+      document.head.appendChild(s);
+    } else {
+      // ---- Azure Static Web Apps built-in auth (Azure deployment) ----
+      loginBtn.addEventListener('click', function () {
+        window.location.href = '/.auth/login/github?post_login_redirect_uri=' +
+          encodeURIComponent(window.location.pathname);
       });
-      window.netlifyIdentity.on('logout', function () { render(null); });
-
-      document.getElementById('login-btn').addEventListener('click', function () {
-        window.netlifyIdentity.open('login');
+      logoutBtn.addEventListener('click', function () {
+        window.location.href = '/.auth/logout?post_logout_redirect_uri=' +
+          encodeURIComponent(window.location.pathname);
       });
-      document.getElementById('logout-btn').addEventListener('click', function () {
-        window.netlifyIdentity.logout();
-      });
-
-      window.netlifyIdentity.init();
-    })();
+      fetch('/.auth/me', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : { clientPrincipal: null }; })
+        .then(function (data) {
+          var p = data && data.clientPrincipal;
+          if (!p) { render(null); return; }
+          var roles = p.userRoles || [];
+          render({
+            email: p.userDetails,
+            isAdmin: roles.indexOf('admin') !== -1
+          });
+        })
+        .catch(function () { render(null); });
+    }
+  })();
   </script>
 </body>
 </html>
