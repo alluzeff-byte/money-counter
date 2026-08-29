@@ -77,6 +77,32 @@
     }
     .bal-nav:hover { color: var(--text); }
     .btn-row { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
+    .linkish {
+      border: none; background: none; color: var(--muted);
+      text-decoration: underline; font-size: 0.8rem; cursor: pointer;
+      padding: 0.4rem; margin-top: 0.4rem;
+    }
+    .linkish:hover { color: var(--text); }
+    textarea {
+      font: inherit; padding: 0.55rem 0.7rem; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--field); color: var(--text);
+      width: 100%; resize: vertical;
+    }
+    .panel-box {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.9rem 1rem;
+      margin: 1rem 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      text-align: left;
+    }
+    .box-title {
+      font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted);
+    }
+    .note { font-size: 0.82rem; color: var(--muted); margin: 0; }
     #balance-label.editable { cursor: text; }
     #balance-label.editable:hover { color: var(--text); }
     #balance-label.editable::after {
@@ -296,6 +322,16 @@
           <button type="button" class="bal-nav hidden" id="bal-next" aria-label="Next balance">&#8250;</button>
         </div>
         <p class="sub" id="balance-sub"></p>
+        <button type="button" id="history-btn" class="linkish hidden">History</button>
+
+        <div id="request-box" class="panel-box hidden">
+          <span class="box-title">Request a top-up</span>
+          <p id="request-pending" class="note hidden"></p>
+          <input type="number" id="request-amount" min="0" step="0.01" inputmode="decimal" placeholder="Amount to add (£)">
+          <textarea id="request-comment" rows="2" maxlength="500" placeholder="Comments"></textarea>
+          <button type="button" class="primary" id="request-submit">Submit</button>
+          <p class="msg" id="request-status"></p>
+        </div>
       </div>
 
       <div class="admin-area hidden" id="admin-area">
@@ -304,6 +340,17 @@
             <span>View user</span>
             <select id="user-select"></select>
           </label>
+
+          <div id="review-box" class="panel-box hidden">
+            <span class="box-title">Pending top-up request</span>
+            <p id="review-summary" class="note"></p>
+            <textarea id="review-comment" rows="2" maxlength="500" placeholder="Comment"></textarea>
+            <div class="btn-row">
+              <button type="button" class="primary" id="review-approve">Approve</button>
+              <button type="button" id="review-reject">Reject</button>
+            </div>
+            <p class="msg" id="review-status"></p>
+          </div>
 
           <label class="fld" id="balance-editor">
             <span>Set balance (£) — current: <span id="editing-label">Balance</span></span>
@@ -316,7 +363,6 @@
 
           <div class="btn-row">
             <button type="button" id="add-balance-btn" class="hidden">+ Add balance</button>
-            <button type="button" id="history-btn" class="hidden">History</button>
           </div>
 
           <p class="msg hidden" id="no-users-msg">No users yet. Invite someone from the Config tab.</p>
@@ -385,6 +431,10 @@
     var nameUserSelect = $('name-user-select'), nameInput = $('name-input'), saveNameBtn = $('save-name-btn'), nameStatus = $('name-status');
     var historyBtn = $('history-btn'), historyModal = $('history-modal'), historyBody = $('history-body');
     var historyTitle = $('history-title'), historyClose = $('history-close');
+    var requestBox = $('request-box'), requestPending = $('request-pending'), requestAmount = $('request-amount');
+    var requestComment = $('request-comment'), requestSubmit = $('request-submit'), requestStatus = $('request-status');
+    var reviewBox = $('review-box'), reviewSummary = $('review-summary'), reviewComment = $('review-comment');
+    var reviewApprove = $('review-approve'), reviewReject = $('review-reject'), reviewStatus = $('review-status');
     var tabButtons = document.querySelectorAll('.tab'), tabPanels = { users: $('panel-users'), config: $('panel-config') };
 
     function selectTab(name) {
@@ -481,7 +531,7 @@
 
     // ---- app state ----
     var selfId = null, usersById = {}, allUsersById = {};
-    var currentBalances = [], balanceIdx = 0;
+    var currentBalances = [], balanceIdx = 0, amAdmin = false;
 
     function invitedSuffix(u) { return u.confirmed ? '' : ' · invited'; }
 
@@ -498,13 +548,16 @@
       balanceSub.textContent = '';
       balPrev.classList.add('hidden');
       balNext.classList.add('hidden');
+      historyBtn.classList.add('hidden');
+      reviewBox.classList.add('hidden');
+      requestPending.classList.add('hidden');
       if (editingLabelEl) editingLabelEl.textContent = 'Balance';
     }
 
     function setBalances(arr, subText) {
       currentBalances = (Array.isArray(arr) && arr.length)
         ? arr
-        : [{ id: 'default', label: 'Balance', amount: 0 }];
+        : [{ id: 'default', label: 'Balance', amount: 0, history: [], request: null }];
       balanceSub.textContent = subText || '';
       showBalanceAt(0);
     }
@@ -517,12 +570,90 @@
       amountEl.textContent = fmt(b.amount);
       balPrev.classList.toggle('hidden', balanceIdx <= 0);
       balNext.classList.toggle('hidden', balanceIdx >= currentBalances.length - 1);
+      historyBtn.classList.remove('hidden');
       balanceInput.value = b.amount;
       if (editingLabelEl) editingLabelEl.textContent = b.label;
+      renderRequestUI(b);
+    }
+
+    // Show the pending top-up: a review box for the admin, a status line for
+    // the balance owner.
+    function renderRequestUI(b) {
+      var req = b && b.request;
+      if (amAdmin) {
+        if (req) {
+          reviewSummary.textContent = fmt(req.amount) + ' requested by ' + (req.by || 'user')
+            + (req.at ? ' · ' + fmtWhen(req.at) : '');
+          reviewComment.value = req.comment || '';
+          reviewStatus.textContent = '';
+          reviewStatus.className = 'msg';
+          reviewBox.classList.remove('hidden');
+        } else {
+          reviewBox.classList.add('hidden');
+        }
+      } else if (req) {
+        requestPending.textContent = 'Pending: ' + fmt(req.amount) + ' awaiting approval'
+          + (req.at ? ' (since ' + fmtWhen(req.at) + ')' : '');
+        requestPending.classList.remove('hidden');
+      } else {
+        requestPending.classList.add('hidden');
+      }
     }
 
     balPrev.addEventListener('click', function () { showBalanceAt(balanceIdx - 1); });
     balNext.addEventListener('click', function () { showBalanceAt(balanceIdx + 1); });
+
+    requestSubmit.addEventListener('click', function () {
+      var b = currentBalances[balanceIdx];
+      if (!b) return;
+      var n = Number(requestAmount.value);
+      if (!isFinite(n) || n <= 0) {
+        requestStatus.textContent = 'Enter an amount greater than 0.';
+        requestStatus.className = 'msg err';
+        return;
+      }
+      requestSubmit.disabled = true;
+      requestStatus.textContent = 'Submitting…';
+      requestStatus.className = 'msg';
+      apiJson('/request', jsonReq({ balanceId: b.id, amount: n, comment: requestComment.value }, 'POST'))
+        .then(function (res) {
+          currentBalances = res.balances;
+          showBalanceAt(balanceIdx);
+          requestAmount.value = '';
+          requestComment.value = '';
+          requestStatus.textContent = 'Request submitted. An admin will review it.';
+          requestStatus.className = 'msg ok';
+        })
+        .catch(function (err) {
+          requestStatus.textContent = err.message;
+          requestStatus.className = 'msg err';
+        })
+        .then(function () { requestSubmit.disabled = false; });
+    });
+
+    function reviewAction(path, verb) {
+      var u = usersById[userSelect.value];
+      var b = currentBalances[balanceIdx];
+      if (!u || !b) return;
+      reviewApprove.disabled = reviewReject.disabled = true;
+      reviewStatus.textContent = 'Working…';
+      reviewStatus.className = 'msg';
+      apiJson(path, jsonReq({ userId: u.id, balanceId: b.id, comment: reviewComment.value }, 'POST'))
+        .then(function (res) {
+          u.balances = res.balances;
+          currentBalances = res.balances;
+          showBalanceAt(balanceIdx);
+          adminStatus.textContent = verb + ' — balance ' + (path === '/approve' ? 'topped up.' : 'unchanged.');
+          adminStatus.className = 'msg ok';
+        })
+        .catch(function (err) {
+          reviewStatus.textContent = err.message;
+          reviewStatus.className = 'msg err';
+        })
+        .then(function () { reviewApprove.disabled = reviewReject.disabled = false; });
+    }
+    reviewApprove.addEventListener('click', function () { reviewAction('/approve', 'Approved'); });
+    reviewReject.addEventListener('click', function () { reviewAction('/reject', 'Rejected'); });
 
     // Admin: click the "BALANCE" heading to rename the balance currently shown.
     function beginLabelEdit() {
@@ -616,10 +747,13 @@
         roleBadge.textContent = me.isAdmin ? 'admin' : 'user';
         roleBadge.className = 'badge ' + (me.isAdmin ? 'admin' : 'user');
 
+        amAdmin = !!me.isAdmin;
+
         if (me.isAdmin) {
           // Admins have no balances of their own; they manage others.
           balanceLabelEl.classList.add('editable');
           balanceLabelEl.title = 'Click to rename this balance';
+          requestBox.classList.add('hidden');
           clearBalances();
           adminTabs.classList.remove('hidden');
           adminArea.classList.remove('hidden');
@@ -632,6 +766,7 @@
         }
         balanceLabelEl.classList.remove('editable');
         balanceLabelEl.removeAttribute('title');
+        requestBox.classList.remove('hidden');
         setBalances(me.balances, 'Your balance');
         adminTabs.classList.add('hidden');
         adminArea.classList.add('hidden');
@@ -669,7 +804,6 @@
         var hasUsers = managed.length > 0;
         userPicker.classList.toggle('hidden', !hasUsers);
         balanceEditor.classList.toggle('hidden', !hasUsers);
-        historyBtn.classList.toggle('hidden', !hasUsers);
         addBalanceBtn.classList.toggle('hidden', !hasUsers);
         noUsersMsg.classList.toggle('hidden', hasUsers);
         if (hasUsers) {
@@ -712,19 +846,18 @@
         day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
       });
     }
-    function fmtVal(field, v) {
-      return field === 'balance' ? fmt(v) : ('“' + v + '”');
-    }
+    function quote(v) { return '“' + (v == null ? '' : v) + '”'; }
     function historyText(e) {
-      if (e.field === 'invited') return 'invited' + (e.to ? ' (' + e.to + ')' : '');
-      if (e.field === 'balance-added') return 'balance added';
-      if (e.field === 'balance') {
-        return (e.balanceLabel ? '“' + e.balanceLabel + '” ' : '') +
-          'balance: ' + fmt(e.from) + ' → ' + fmt(e.to);
+      var c = e.comment ? ' — ' + quote(e.comment) : '';
+      switch (e.type) {
+        case 'created': return 'balance created';
+        case 'set': return 'balance set: ' + fmt(e.from) + ' → ' + fmt(e.to);
+        case 'renamed': return 'renamed: ' + quote(e.from) + ' → ' + quote(e.to);
+        case 'topup-requested': return 'top-up requested: ' + fmt(e.amount) + c;
+        case 'topup-approved': return 'top-up approved: +' + fmt(e.amount) + c;
+        case 'topup-rejected': return 'top-up rejected: ' + fmt(e.amount) + c;
+        default: return e.type || 'change';
       }
-      if (e.field === 'name') return 'name: ' + fmtVal('name', e.from) + ' → ' + fmtVal('name', e.to);
-      if (e.field === 'label') return 'balance name: ' + fmtVal('label', e.from) + ' → ' + fmtVal('label', e.to);
-      return e.field + ': ' + fmtVal(e.field, e.from) + ' → ' + fmtVal(e.field, e.to);
     }
     function renderHistory(entries) {
       if (!entries || !entries.length) {
@@ -734,7 +867,7 @@
       var ul = document.createElement('ul');
       entries.forEach(function (e) {
         var li = document.createElement('li');
-        li.textContent = fmtWhen(e.at) + ' · ' + historyText(e) + ' · by ' + e.by;
+        li.textContent = fmtWhen(e.at) + ' · ' + historyText(e) + ' · by ' + (e.by || '?');
         ul.appendChild(li);
       });
       historyBody.innerHTML = '';
@@ -743,16 +876,16 @@
 
     function closeHistory() { historyModal.classList.add('hidden'); }
     function openHistory() {
-      var u = usersById[userSelect.value];
-      if (!u) return;
-      historyTitle.textContent = 'History — ' + u.name;
-      historyBody.innerHTML = '<p class="empty">Loading…</p>';
+      var b = currentBalances[balanceIdx];
+      if (!b) return;
+      var title = 'History — ' + b.label;
+      if (amAdmin) {
+        var u = usersById[userSelect.value];
+        if (u) title = 'History — ' + u.name + ' · ' + b.label;
+      }
+      historyTitle.textContent = title;
+      renderHistory((b.history || []).slice().reverse()); // newest first
       historyModal.classList.remove('hidden');
-      apiJson('/history?userId=' + encodeURIComponent(u.id))
-        .then(function (res) { renderHistory(res.history); })
-        .catch(function (err) {
-          historyBody.innerHTML = '<p class="empty">' + (err.message || 'Could not load history.') + '</p>';
-        });
     }
 
     historyBtn.addEventListener('click', openHistory);

@@ -3,8 +3,9 @@ import { randomUUID } from 'node:crypto';
 // Money Counter API — per-user GBP balances.
 //
 // Auth comes from the Netlify Identity JWT that Netlify decodes into
-// context.clientContext.user. Balances are stored in each user's Identity
-// app_metadata.balance (admin-writable), so there is no external datastore.
+// context.clientContext.user. Each user's balances live in their Identity
+// app_metadata.balances = [{ id, label, amount, history[], request|null }].
+// There is no external datastore.
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -34,38 +35,49 @@ const nameOf = (meta, email) => {
 };
 
 const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
+const money = (v) => Math.max(0, Math.round(num(v) * 100) / 100);
 const cleanLabel = (v) => {
   const s = typeof v === 'string' ? v.trim().slice(0, 60) : '';
   return !s || s.toLowerCase() === 'balance' ? 'Balance' : s;
 };
+const cleanComment = (v) => String(v == null ? '' : v).trim().slice(0, 500);
+const nowIso = () => new Date().toISOString();
 
-// A user's balances as a normalised [{ id, label, amount }] array.
-// Falls back to the legacy single `balance` / `balanceLabel` fields.
+// Normalise one stored balance object.
+const normBalance = (b, i) => {
+  const req = b && b.request && typeof b.request === 'object' ? b.request : null;
+  return {
+    id: String((b && b.id) || i),
+    label: cleanLabel(b && b.label),
+    amount: money(b && b.amount),
+    history: Array.isArray(b && b.history) ? b.history.slice(-100) : [],
+    request: req ? {
+      amount: money(req.amount),
+      comment: cleanComment(req.comment),
+      at: req.at || null,
+      by: req.by || null,
+    } : null,
+  };
+};
+
+// A user's balances as a normalised array. Falls back to the legacy single
+// `balance` / `balanceLabel` fields (and folds any legacy user-level history
+// into the first balance).
 const normBalances = (meta) => {
   const arr = meta && meta.balances;
-  if (Array.isArray(arr) && arr.length) {
-    return arr.map((b, i) => ({
-      id: String((b && b.id) || i),
-      label: cleanLabel(b && b.label),
-      amount: Math.max(0, Math.round(num(b && b.amount) * 100) / 100),
-    }));
-  }
-  return [{
+  if (Array.isArray(arr) && arr.length) return arr.map(normBalance);
+  return [normBalance({
     id: 'default',
-    label: cleanLabel(meta && meta.balanceLabel),
-    amount: Math.max(0, Math.round(num(meta && meta.balance) * 100) / 100),
-  }];
+    label: meta && meta.balanceLabel,
+    amount: meta && meta.balance,
+    history: Array.isArray(meta && meta.history) ? meta.history : [],
+  }, 0)];
 };
 
-// Append an audit entry to app_metadata.history, keeping the most recent 100.
-const pushHistory = (meta, entry) => {
-  const hist = Array.isArray(meta && meta.history) ? meta.history.slice() : [];
-  hist.push(entry);
-  return hist.slice(-100);
+const pushBalHist = (b, entry) => {
+  b.history = (Array.isArray(b.history) ? b.history : []).concat([entry]).slice(-100);
 };
 
-// Call the Netlify Identity (GoTrue) API. `token` is either the caller's
-// access token (for /user) or the admin token from clientContext.identity.
 const idFetch = async (baseUrl, token, path, init = {}) => {
   const res = await fetch(`${baseUrl}${path}`, {
     ...init,
@@ -100,7 +112,7 @@ export async function handler(event, context) {
   const bearer = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
   const route = routeOf(event);
   const method = event.httpMethod;
-  const admin = rolesOf(user.app_metadata).indexOf('admin') !== -1;
+  const admin = isAdminMeta(user.app_metadata);
 
   // Admin-scoped Identity call. Uses the platform admin token; if that token
   // is rejected (notably under `netlify dev`, which injects a locally-signed
@@ -117,7 +129,27 @@ export async function handler(event, context) {
     }
   };
 
+  const getUserById = (userId) => adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
+
+  // Persist a balances array and return the normalised result. The first
+  // balance is mirrored to the legacy fields for any external reader.
+  const saveBalances = async (userId, targetMeta, balances) => {
+    const merged = { ...(targetMeta || {}), balances };
+    if (balances[0]) { merged.balance = balances[0].amount; merged.balanceLabel = balances[0].label; }
+    delete merged.history; // history now lives per balance
+    const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ app_metadata: merged }),
+    });
+    return normBalances(updated.app_metadata);
+  };
+
+  const findBalance = (balances, balanceId) =>
+    balances.find((x) => x.id === String(balanceId)) || (balanceId == null ? balances[0] : null);
+
   try {
+    // ---- Any authenticated user ------------------------------------------
+
     // GET /me — the caller's own record (fresh, via their own token)
     if (route === '/me' && method === 'GET') {
       let meta = user.app_metadata || {};
@@ -125,41 +157,47 @@ export async function handler(event, context) {
         const fresh = await idFetch(identity.url, bearer, '/user');
         if (fresh && fresh.app_metadata) meta = fresh.app_metadata;
       } catch { /* fall back to JWT copy */ }
-      const balances = normBalances(meta);
       return json(200, {
         id: user.sub,
         email: user.email,
         name: nameOf(meta, user.email),
-        isAdmin: rolesOf(meta).indexOf('admin') !== -1,
-        balances,
+        isAdmin: isAdminMeta(meta),
+        balances: normBalances(meta),
       });
     }
 
-    // Everything below requires admin.
+    // POST /request { balanceId, amount, comment } — the caller asks for a
+    // top-up on one of their own balances. Persisted with the admin token
+    // because users cannot write their own app_metadata.
+    if (route === '/request' && method === 'POST') {
+      const { balanceId, amount, comment } = readBody(event);
+      const n = Number(amount);
+      if (!isFinite(n) || n <= 0) return json(400, { error: 'Amount must be greater than 0.' });
+
+      const target = await getUserById(user.sub);
+      if (isAdminMeta(target.app_metadata)) return json(400, { error: 'Admins do not have balances.' });
+      const balances = normBalances(target.app_metadata);
+      const b = findBalance(balances, balanceId);
+      if (!b) return json(404, { error: 'Balance not found.' });
+
+      const c = cleanComment(comment);
+      b.request = { amount: money(n), comment: c, at: nowIso(), by: user.email };
+      pushBalHist(b, { at: b.request.at, by: user.email, type: 'topup-requested', amount: b.request.amount, comment: c });
+      const out = await saveBalances(user.sub, target.app_metadata, balances);
+      return json(200, { balances: out });
+    }
+
+    // ---- Admin only -----------------------------------------------------
     if (!admin) return json(403, { error: 'Admin only.' });
     if (!identity.token && !bearer) return json(500, { error: 'No usable Identity token.' });
 
-    // Load a non-admin target user, or fail with a useful message.
     const loadManagedUser = async (userId) => {
       if (!userId) { const e = new Error('userId is required.'); e.status = 400; throw e; }
-      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
+      const target = await getUserById(userId);
       if (isAdminMeta(target.app_metadata)) {
         const e = new Error('Admins do not have balances.'); e.status = 400; throw e;
       }
       return target;
-    };
-
-    // Persist a balances array (+ optional history entry) and return the
-    // normalised result. Also mirrors the first balance to the legacy fields.
-    const saveBalances = async (userId, targetMeta, balances, historyEntry) => {
-      const merged = { ...(targetMeta || {}), balances };
-      if (balances[0]) { merged.balance = balances[0].amount; merged.balanceLabel = balances[0].label; }
-      if (historyEntry) merged.history = pushHistory(targetMeta, historyEntry);
-      const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ app_metadata: merged }),
-      });
-      return normBalances(updated.app_metadata);
     };
 
     // GET /users — all users with their balances
@@ -189,10 +227,10 @@ export async function handler(event, context) {
       const { userId } = readBody(event);
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
-      balances.push({ id: randomUUID(), label: 'Balance', amount: 0 });
-      const out = await saveBalances(userId, target.app_metadata, balances, {
-        at: new Date().toISOString(), by: user.email, field: 'balance-added',
-      });
+      const nb = normBalance({ id: randomUUID(), label: 'Balance', amount: 0 }, balances.length);
+      pushBalHist(nb, { at: nowIso(), by: user.email, type: 'created' });
+      balances.push(nb);
+      const out = await saveBalances(userId, target.app_metadata, balances);
       return json(200, { userId, balances: out });
     }
 
@@ -201,18 +239,18 @@ export async function handler(event, context) {
       const { userId, balanceId, amount } = readBody(event);
       const n = Number(amount);
       if (!isFinite(n) || n < 0) return json(400, { error: 'amount must be a number >= 0.' });
-      const rounded = Math.round(n * 100) / 100;
+      const rounded = money(n);
 
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
-      const b = balances.find((x) => x.id === String(balanceId)) || (balanceId == null && balances[0]);
+      const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
-      const prev = b.amount;
-      b.amount = rounded;
-      const out = await saveBalances(userId, target.app_metadata, balances,
-        prev !== rounded
-          ? { at: new Date().toISOString(), by: user.email, field: 'balance', balanceLabel: b.label, from: prev, to: rounded }
-          : null);
+      if (b.amount !== rounded) {
+        const prev = b.amount;
+        b.amount = rounded;
+        pushBalHist(b, { at: nowIso(), by: user.email, type: 'set', from: prev, to: rounded });
+      }
+      const out = await saveBalances(userId, target.app_metadata, balances);
       return json(200, { userId, balances: out });
     }
 
@@ -221,14 +259,56 @@ export async function handler(event, context) {
       const { userId, balanceId, label } = readBody(event);
       const target = await loadManagedUser(userId);
       const balances = normBalances(target.app_metadata);
-      const b = balances.find((x) => x.id === String(balanceId)) || (balanceId == null && balances[0]);
+      const b = findBalance(balances, balanceId);
       if (!b) return json(404, { error: 'Balance not found.' });
-      const prev = b.label;
-      b.label = cleanLabel(label);
-      const out = await saveBalances(userId, target.app_metadata, balances,
-        prev !== b.label
-          ? { at: new Date().toISOString(), by: user.email, field: 'label', from: prev, to: b.label }
-          : null);
+      const next = cleanLabel(label);
+      if (b.label !== next) {
+        const prev = b.label;
+        b.label = next;
+        pushBalHist(b, { at: nowIso(), by: user.email, type: 'renamed', from: prev, to: next });
+      }
+      const out = await saveBalances(userId, target.app_metadata, balances);
+      return json(200, { userId, balances: out });
+    }
+
+    // POST /approve { userId, balanceId, comment } — grant a pending top-up
+    if (route === '/approve' && method === 'POST') {
+      const { userId, balanceId, comment } = readBody(event);
+      const target = await loadManagedUser(userId);
+      const balances = normBalances(target.app_metadata);
+      const b = findBalance(balances, balanceId);
+      if (!b) return json(404, { error: 'Balance not found.' });
+      if (!b.request) return json(400, { error: 'No pending request for this balance.' });
+
+      const req = b.request;
+      const c = comment == null ? req.comment : cleanComment(comment);
+      b.amount = money(b.amount + req.amount);
+      pushBalHist(b, {
+        at: nowIso(), by: user.email, type: 'topup-approved',
+        amount: req.amount, comment: c, requestedBy: req.by,
+      });
+      b.request = null;
+      const out = await saveBalances(userId, target.app_metadata, balances);
+      return json(200, { userId, balances: out });
+    }
+
+    // POST /reject { userId, balanceId, comment } — decline a pending top-up
+    if (route === '/reject' && method === 'POST') {
+      const { userId, balanceId, comment } = readBody(event);
+      const target = await loadManagedUser(userId);
+      const balances = normBalances(target.app_metadata);
+      const b = findBalance(balances, balanceId);
+      if (!b) return json(404, { error: 'Balance not found.' });
+      if (!b.request) return json(400, { error: 'No pending request for this balance.' });
+
+      const req = b.request;
+      const c = comment == null ? req.comment : cleanComment(comment);
+      pushBalHist(b, {
+        at: nowIso(), by: user.email, type: 'topup-rejected',
+        amount: req.amount, comment: c, requestedBy: req.by,
+      });
+      b.request = null;
+      const out = await saveBalances(userId, target.app_metadata, balances);
       return json(200, { userId, balances: out });
     }
 
@@ -238,35 +318,16 @@ export async function handler(event, context) {
       if (!userId) return json(400, { error: 'userId is required.' });
       const clean = typeof name === 'string' ? name.trim().slice(0, 120) : '';
 
-      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
+      const target = await getUserById(userId);
       const email = target.email;
-      const prevName = nameOf(target.app_metadata, email);
       const merged = { ...(target.app_metadata || {}) };
       if (!clean || clean === email) delete merged.name;
       else merged.name = clean;
-      const newName = nameOf(merged, email);
-      if (prevName !== newName) {
-        merged.history = pushHistory(target.app_metadata, {
-          at: new Date().toISOString(), by: user.email, field: 'name', from: prevName, to: newName,
-        });
-      }
-
       const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PUT',
         body: JSON.stringify({ app_metadata: merged }),
       });
       return json(200, { userId, name: nameOf(updated.app_metadata, email), email });
-    }
-
-    // GET /history?userId=... — audit trail for one user (newest first)
-    if (route === '/history' && method === 'GET') {
-      const userId = (event.queryStringParameters || {}).userId;
-      if (!userId) return json(400, { error: 'userId is required.' });
-      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
-      const hist = Array.isArray(target.app_metadata && target.app_metadata.history)
-        ? target.app_metadata.history.slice().reverse()
-        : [];
-      return json(200, { userId, email: target.email, history: hist });
     }
 
     // POST /invite { email } — send a Netlify Identity invite
@@ -276,26 +337,7 @@ export async function handler(event, context) {
         return json(400, { error: 'A valid email is required.' });
       }
       const lc = email.toLowerCase();
-      const created = await adminFetch('/invite', {
-        method: 'POST',
-        body: JSON.stringify({ email: lc }),
-      });
-      // Best-effort: seed the history with the invite event.
-      if (created && created.id) {
-        try {
-          await adminFetch(`/admin/users/${created.id}`, {
-            method: 'PUT',
-            body: JSON.stringify({
-              app_metadata: {
-                ...(created.app_metadata || {}),
-                history: pushHistory(created.app_metadata, {
-                  at: new Date().toISOString(), by: user.email, field: 'invited', to: lc,
-                }),
-              },
-            }),
-          });
-        } catch { /* non-fatal */ }
-      }
+      await adminFetch('/invite', { method: 'POST', body: JSON.stringify({ email: lc }) });
       return json(200, { invited: lc });
     }
 
