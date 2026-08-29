@@ -527,9 +527,13 @@
     });
 
     // ---- invite / recovery links ----
-    var hash = new URLSearchParams((location.hash || '').replace(/^#\/?/, ''));
-    var inviteToken = hash.get('invite_token');
-    var recoveryToken = hash.get('recovery_token');
+    // Netlify puts the token in the URL fragment, but be lenient and also
+    // check the query string.
+    var hashParams = new URLSearchParams((location.hash || '').replace(/^#\/?/, ''));
+    var queryParams = new URLSearchParams(location.search || '');
+    var pick = function (name) { return hashParams.get(name) || queryParams.get(name); };
+    var inviteToken = pick('invite_token');
+    var recoveryToken = pick('recovery_token');
     var mode = inviteToken ? 'invite' : (recoveryToken ? 'recovery' : 'login');
 
     function stripHash() {
@@ -571,12 +575,23 @@
 
       var flow;
       if (mode === 'invite') {
-        flow = fetch(ID + '/verify', jsonReq({ type: 'signup', token: inviteToken, password: pw }))
-          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        // Netlify GoTrue has accepted both "invite" and "signup" for invited
+        // users across versions — try the correct one, then fall back.
+        var tryVerify = function (type) {
+          return fetch(ID + '/verify', jsonReq({ type: type, token: inviteToken, password: pw }))
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); });
+        };
+        flow = tryVerify('invite')
           .then(function (res) {
-            if (!res.ok) throw new Error(errText(res.d, 'This invite link is invalid or expired. Ask for a new invite.'));
-            saveTokens(res.d); stripHash(); mode = 'login';
-          });
+            if (res.ok) return res;
+            return tryVerify('signup').then(function (res2) {
+              if (res2.ok) return res2;
+              // Surface whichever error is more informative.
+              throw new Error(errText(res2.d, errText(res.d,
+                'This invite link is invalid, already used, or expired. Ask the admin to send a new invite.')));
+            });
+          })
+          .then(function (res) { saveTokens(res.d); stripHash(); mode = 'login'; });
       } else if (mode === 'recovery') {
         flow = fetch(ID + '/verify', jsonReq({ type: 'recovery', token: recoveryToken }))
           .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
