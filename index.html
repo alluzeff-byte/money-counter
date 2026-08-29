@@ -150,10 +150,11 @@
       transition: opacity 0.12s;
     }
     #balance-label.editable:hover::after { opacity: 0.5; }
+    /* Balance names keep the case they were entered in. */
+    #balance-label { text-transform: none; letter-spacing: 0.03em; }
     .label-edit {
       font: inherit;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
+      letter-spacing: 0.03em;
       text-align: center;
       width: 100%;
       max-width: 260px;
@@ -313,9 +314,8 @@
     }
     .modal-head h2 {
       margin: 0;
-      font-size: 0.85rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+      font-size: 0.9rem;
+      letter-spacing: 0.02em;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
