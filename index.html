@@ -1085,10 +1085,14 @@
           li.appendChild(span);
           li.appendChild(document.createTextNode(' · '));
         }
-        var rest = p.desc;
-        if (p.total != null) rest += ' · total ' + fmt(p.total);
-        rest += ' · ' + fmtWhen(e.at);
-        li.appendChild(document.createTextNode(rest));
+        li.appendChild(document.createTextNode(p.desc));
+        if (p.total != null) {
+          li.appendChild(document.createTextNode(' · total '));
+          var tot = document.createElement('b');
+          tot.textContent = fmt(p.total);
+          li.appendChild(tot);
+        }
+        li.appendChild(document.createTextNode(' · ' + fmtWhen(e.at)));
         ul.appendChild(li);
       });
       historyBody.innerHTML = '';
