@@ -134,13 +134,25 @@
       border-top: 1px dashed var(--border);
       text-align: left;
     }
-    .admin-area h2 {
-      margin: 0 0 1rem;
-      font-size: 0.8rem;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text);
+    .tabs {
+      display: flex;
+      gap: 0.25rem;
+      margin-bottom: 1.25rem;
+      border-bottom: 1px solid var(--border);
     }
+    .tab {
+      border: none;
+      background: none;
+      padding: 0.5rem 0.9rem;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      font-weight: 700;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); }
     .fld { display: block; margin-bottom: 1rem; }
     .fld > span:first-child {
       display: block;
@@ -192,32 +204,38 @@
       <p class="sub" id="balance-sub"></p>
 
       <div class="admin-area hidden" id="admin-area">
-        <h2>Admin console</h2>
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" id="tab-users" data-tab="users" role="tab">Users</button>
+          <button type="button" class="tab" id="tab-config" data-tab="config" role="tab">Config</button>
+        </div>
 
-        <label class="fld">
-          <span>View user</span>
-          <select id="user-select"></select>
-        </label>
+        <div class="tabpanel" id="panel-users" role="tabpanel">
+          <label class="fld" id="user-picker">
+            <span>View user</span>
+            <select id="user-select"></select>
+          </label>
 
-        <label class="fld">
-          <span>Set balance (£)</span>
-          <span class="row">
-            <input type="number" id="balance-input" min="0" step="0.01" inputmode="decimal">
-            <button type="button" class="primary" id="save-balance-btn">Save</button>
-          </span>
-        </label>
-        <p class="msg" id="admin-status"></p>
+          <label class="fld" id="balance-editor">
+            <span>Set balance (£)</span>
+            <span class="row">
+              <input type="number" id="balance-input" min="0" step="0.01" inputmode="decimal">
+              <button type="button" class="primary" id="save-balance-btn">Save</button>
+            </span>
+          </label>
+          <p class="msg" id="admin-status"></p>
+          <p class="msg hidden" id="no-users-msg">No users yet. Invite someone from the Config tab.</p>
+        </div>
 
-        <hr>
-
-        <form class="fld" id="invite-form">
-          <span>Invite a user by email</span>
-          <span class="row">
-            <input type="email" id="invite-email" placeholder="name@example.com" autocomplete="off">
-            <button type="submit" class="primary" id="invite-btn">Invite</button>
-          </span>
-        </form>
-        <p class="msg" id="invite-status"></p>
+        <div class="tabpanel hidden" id="panel-config" role="tabpanel">
+          <form class="fld" id="invite-form">
+            <span>Invite a user by email</span>
+            <span class="row">
+              <input type="email" id="invite-email" placeholder="name@example.com" autocomplete="off">
+              <button type="submit" class="primary" id="invite-btn">Invite</button>
+            </span>
+          </form>
+          <p class="msg" id="invite-status"></p>
+        </div>
       </div>
     </section>
   </main>
@@ -239,6 +257,19 @@
     var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), ssoBtn = $('sso-btn'), logoutBtn = $('logout-btn');
     var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn');
     var adminStatus = $('admin-status'), inviteForm = $('invite-form'), inviteEmail = $('invite-email'), inviteStatus = $('invite-status');
+    var userPicker = $('user-picker'), balanceEditor = $('balance-editor'), noUsersMsg = $('no-users-msg');
+    var tabButtons = document.querySelectorAll('.tab'), tabPanels = { users: $('panel-users'), config: $('panel-config') };
+
+    function selectTab(name) {
+      Array.prototype.forEach.call(tabButtons, function (b) {
+        b.classList.toggle('active', b.getAttribute('data-tab') === name);
+      });
+      tabPanels.users.classList.toggle('hidden', name !== 'users');
+      tabPanels.config.classList.toggle('hidden', name !== 'config');
+    }
+    Array.prototype.forEach.call(tabButtons, function (b) {
+      b.addEventListener('click', function () { selectTab(b.getAttribute('data-tab')); });
+    });
 
     function showGate() { app.classList.add('hidden'); gate.classList.remove('hidden'); }
     function showError(m) { gateError.textContent = m; gateError.classList.remove('hidden'); gateNote.classList.add('hidden'); }
@@ -355,7 +386,7 @@
     var selfId = null, usersById = {};
 
     function setBalanceView(labelText, amount) {
-      amountEl.textContent = fmt(amount);
+      amountEl.textContent = (typeof amount === 'number') ? fmt(amount) : (amount || '—');
       balanceSub.textContent = labelText || '';
     }
 
@@ -371,16 +402,19 @@
         who.textContent = me.email;
         roleBadge.textContent = me.isAdmin ? 'admin' : 'user';
         roleBadge.className = 'badge ' + (me.isAdmin ? 'admin' : 'user');
-        setBalanceView('Your balance', me.balance);
 
         if (me.isAdmin) {
+          // Admins have no balance of their own; they manage others.
+          setBalanceView('', '—');
           adminArea.classList.remove('hidden');
+          selectTab('users');
           loadUsers().catch(function (err) {
             adminStatus.textContent = 'Could not load users: ' + (err.message || 'server error');
             adminStatus.className = 'msg err';
           });
           return;
         }
+        setBalanceView('Your balance', me.balance);
         adminArea.classList.add('hidden');
       }).catch(function (err) {
         showGate();
@@ -396,28 +430,36 @@
 
     function loadUsers() {
       return apiJson('/users').then(function (data) {
-        var users = data.users || [];
+        // Admins have no balance and are not managed here.
+        var users = (data.users || []).filter(function (u) { return !u.isAdmin; });
         usersById = {};
         userSelect.innerHTML = '';
         users.forEach(function (u) {
           usersById[u.id] = u;
           var o = document.createElement('option');
           o.value = u.id;
-          o.textContent = u.email
-            + (u.id === selfId ? ' (you)' : '')
-            + (u.isAdmin ? ' · admin' : '')
-            + (u.confirmed ? '' : ' · invited');
+          o.textContent = u.email + (u.confirmed ? '' : ' · invited');
           userSelect.appendChild(o);
         });
-        userSelect.value = selfId in usersById ? selfId : (users[0] && users[0].id);
-        onUserSelect();
+
+        var hasUsers = users.length > 0;
+        userPicker.classList.toggle('hidden', !hasUsers);
+        balanceEditor.classList.toggle('hidden', !hasUsers);
+        noUsersMsg.classList.toggle('hidden', hasUsers);
+
+        if (hasUsers) {
+          userSelect.value = users[0].id;
+          onUserSelect();
+        } else {
+          setBalanceView('', '—');
+        }
       });
     }
 
     function onUserSelect() {
       var u = usersById[userSelect.value];
       if (!u) return;
-      var label = u.email + (u.id === selfId ? ' (you)' : '');
+      var label = u.email + (u.confirmed ? '' : ' · invited, not signed in yet');
       setBalanceView(label, u.balance);
       balanceInput.value = u.balance;
       adminStatus.textContent = '';
@@ -441,7 +483,7 @@
       apiJson('/balance', jsonReq({ userId: u.id, balance: n }, 'PUT'))
         .then(function (res) {
           u.balance = res.balance;
-          setBalanceView(u.email + (u.id === selfId ? ' (you)' : ''), res.balance);
+          setBalanceView(u.email + (u.confirmed ? '' : ' · invited, not signed in yet'), res.balance);
           balanceInput.value = res.balance;
           adminStatus.textContent = 'Saved ' + fmt(res.balance) + ' for ' + u.email + '.';
           adminStatus.className = 'msg ok';

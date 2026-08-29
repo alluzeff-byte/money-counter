@@ -121,6 +121,9 @@ export async function handler(event, context) {
       const rounded = Math.round(n * 100) / 100;
 
       const target = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`);
+      if (rolesOf(target.app_metadata).indexOf('admin') !== -1) {
+        return json(400, { error: 'Admins do not have a balance.' });
+      }
       const merged = { ...(target.app_metadata || {}), balance: rounded };
       const updated = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PUT',
