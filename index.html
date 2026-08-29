@@ -129,15 +129,13 @@
     .gate p { color: var(--muted); margin: 0.5rem 0 0; }
 
     .admin-area {
-      margin-top: 1.75rem;
-      padding-top: 1.25rem;
-      border-top: 1px dashed var(--border);
+      margin-top: 1.5rem;
       text-align: left;
     }
     .tabs {
       display: flex;
       gap: 0.25rem;
-      margin-bottom: 1.25rem;
+      margin: 0.25rem 0 1.5rem;
       border-bottom: 1px solid var(--border);
     }
     .tab {
@@ -199,16 +197,18 @@
         </span>
       </div>
 
-      <p class="label">Balance</p>
-      <p class="amount" id="amount">—</p>
-      <p class="sub" id="balance-sub"></p>
+      <div class="tabs hidden" id="admin-tabs" role="tablist">
+        <button type="button" class="tab active" id="tab-users" data-tab="users" role="tab">Users</button>
+        <button type="button" class="tab" id="tab-config" data-tab="config" role="tab">Config</button>
+      </div>
+
+      <div id="balance-section">
+        <p class="label">Balance</p>
+        <p class="amount" id="amount">—</p>
+        <p class="sub" id="balance-sub"></p>
+      </div>
 
       <div class="admin-area hidden" id="admin-area">
-        <div class="tabs" role="tablist">
-          <button type="button" class="tab active" id="tab-users" data-tab="users" role="tab">Users</button>
-          <button type="button" class="tab" id="tab-config" data-tab="config" role="tab">Config</button>
-        </div>
-
         <div class="tabpanel" id="panel-users" role="tabpanel">
           <label class="fld" id="user-picker">
             <span>View user</span>
@@ -258,6 +258,7 @@
     var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn');
     var adminStatus = $('admin-status'), inviteForm = $('invite-form'), inviteEmail = $('invite-email'), inviteStatus = $('invite-status');
     var userPicker = $('user-picker'), balanceEditor = $('balance-editor'), noUsersMsg = $('no-users-msg');
+    var adminTabs = $('admin-tabs'), balanceSection = $('balance-section');
     var tabButtons = document.querySelectorAll('.tab'), tabPanels = { users: $('panel-users'), config: $('panel-config') };
 
     function selectTab(name) {
@@ -266,6 +267,8 @@
       });
       tabPanels.users.classList.toggle('hidden', name !== 'users');
       tabPanels.config.classList.toggle('hidden', name !== 'config');
+      // Balance only makes sense on the Users tab.
+      balanceSection.classList.toggle('hidden', name === 'config');
     }
     Array.prototype.forEach.call(tabButtons, function (b) {
       b.addEventListener('click', function () { selectTab(b.getAttribute('data-tab')); });
@@ -406,6 +409,7 @@
         if (me.isAdmin) {
           // Admins have no balance of their own; they manage others.
           setBalanceView('', '—');
+          adminTabs.classList.remove('hidden');
           adminArea.classList.remove('hidden');
           selectTab('users');
           loadUsers().catch(function (err) {
@@ -415,7 +419,9 @@
           return;
         }
         setBalanceView('Your balance', me.balance);
+        adminTabs.classList.add('hidden');
         adminArea.classList.add('hidden');
+        balanceSection.classList.remove('hidden');
       }).catch(function (err) {
         showGate();
         if (err.status === 401) {
