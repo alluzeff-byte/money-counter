@@ -79,15 +79,8 @@ const appendHist = async (userId, balanceId, entry) => {
     return null;
   } catch (e) { console.error('appendHist:', (e && e.stack) || e); return (e && (e.message || String(e))) || 'blob write failed'; }
 };
-// Per-user account log: balance lifecycle events (created/renamed/archived/
-// restored/deleted). Survives balance deletion.
-const appendAcct = async (userId, entry) => {
-  try {
-    const s = histStore();
-    const k = `${userId}__account`;
-    const cur = await s.get(k, { type: 'json' }).catch(() => null);
-    await s.setJSON(k, (Array.isArray(cur) ? cur : []).concat([entry]).slice(-HIST_CAP));
-  } catch (e) { console.error('appendAcct:', e && e.message); }
+const deleteHist = async (userId, balanceId) => {
+  try { await histStore().delete(histKey(userId, balanceId)); } catch (e) { console.error('deleteHist:', e && e.message); }
 };
 // Move any history embedded in old app_metadata balances into Blobs (once).
 const migrateEmbeddedHistory = async (userId, meta) => {
@@ -309,21 +302,6 @@ export async function handler(event, context) {
       }
     }
 
-    // GET /account?userId=  — per-user balance-lifecycle log, newest first
-    if (route === '/account' && method === 'GET') {
-      const q = event.queryStringParameters || {};
-      const userId = q.userId || user.sub;
-      if (userId !== user.sub && !admin) return json(403, { error: 'Not allowed.' });
-      try {
-        const v = await histStore().get(`${userId}__account`, { type: 'json' });
-        const log = Array.isArray(v) ? v : [];
-        return json(200, { userId, history: log.slice().reverse() });
-      } catch (e) {
-        console.error('/account:', (e && e.stack) || e);
-        return json(500, { error: 'History store: ' + ((e && (e.message || String(e))) || 'unavailable') });
-      }
-    }
-
     // POST /request { balanceId, amount, comment } — caller asks for a top-up
     if (route === '/request' && method === 'POST') {
       const { balanceId, amount, comment } = readBody(event);
@@ -398,9 +376,7 @@ export async function handler(event, context) {
       const nb = normBalance({ id: randomUUID(), label: 'Balance', amount: 0 }, balances.length);
       balances.push(nb);
       const out = await saveBalances(userId, target.app_metadata, balances);
-      const at = nowIso();
-      await appendHist(userId, nb.id, { at, by: user.email, type: 'created' });
-      await appendAcct(userId, { at, by: user.email, type: 'created', label: nb.label });
+      await appendHist(userId, nb.id, { at: nowIso(), by: user.email, type: 'created' });
       return json(200, { userId, balances: out });
     }
 
@@ -414,11 +390,7 @@ export async function handler(event, context) {
       let changed = false;
       if (!b.archived) { b.archived = true; b.requests = []; changed = true; }
       const out = await saveBalances(userId, target.app_metadata, balances);
-      if (changed) {
-        const at = nowIso();
-        await appendHist(userId, b.id, { at, by: user.email, type: 'archived' });
-        await appendAcct(userId, { at, by: user.email, type: 'archived', label: b.label });
-      }
+      if (changed) await appendHist(userId, b.id, { at: nowIso(), by: user.email, type: 'archived' });
       return json(200, { userId, balances: out });
     }
 
@@ -432,11 +404,7 @@ export async function handler(event, context) {
       let changed = false;
       if (b.archived) { b.archived = false; changed = true; }
       const out = await saveBalances(userId, target.app_metadata, balances);
-      if (changed) {
-        const at = nowIso();
-        await appendHist(userId, b.id, { at, by: user.email, type: 'restored' });
-        await appendAcct(userId, { at, by: user.email, type: 'restored', label: b.label });
-      }
+      if (changed) await appendHist(userId, b.id, { at: nowIso(), by: user.email, type: 'restored' });
       return json(200, { userId, balances: out });
     }
 
@@ -448,14 +416,9 @@ export async function handler(event, context) {
       const i = balances.findIndex((x) => x.id === String(balanceId));
       if (i === -1) return json(404, { error: 'Balance not found.' });
       if (!balances[i].archived) return json(400, { error: 'Only archived balances can be deleted.' });
-      const gone = balances[i];
       balances.splice(i, 1);
       const out = await saveBalances(userId, target.app_metadata, balances);
-      const at = nowIso();
-      // Keep the balance's own history, capped with a final "deleted" mark,
-      // and record the deletion in the account log.
-      await appendHist(userId, gone.id, { at, by: user.email, type: 'deleted', label: gone.label, amount: gone.amount });
-      await appendAcct(userId, { at, by: user.email, type: 'deleted', label: gone.label, amount: gone.amount });
+      await deleteHist(userId, String(balanceId));
       return json(200, { userId, balances: out });
     }
 
@@ -504,10 +467,7 @@ export async function handler(event, context) {
         entry = { at: nowIso(), by: user.email, type: 'renamed', from: prev, to: next };
       }
       const out = await saveBalances(userId, target.app_metadata, balances);
-      if (entry) {
-        await appendHist(userId, b.id, entry);
-        await appendAcct(userId, entry);
-      }
+      if (entry) await appendHist(userId, b.id, entry);
       return json(200, { userId, balances: out });
     }
 
