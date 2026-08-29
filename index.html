@@ -88,13 +88,16 @@
       cursor: pointer;
     }
     .edge-btn:hover { color: var(--text); border-color: var(--accent); }
-    .amount-row { display: flex; align-items: center; justify-content: center; gap: 0.4rem; }
+    .amount-row { display: flex; align-items: center; }
+    .amount-row .amount { flex: 1 1 auto; min-width: 0; text-align: center; }
     .bal-nav {
+      flex: 0 0 auto;
       border: none; background: none; cursor: pointer;
       font-size: 2.25rem; line-height: 1; color: var(--muted);
       padding: 0 0.2rem;
     }
     .bal-nav:hover { color: var(--text); }
+    .bal-nav.invisible { visibility: hidden; }
     .btn-row { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
     .linkish {
       border: none; background: none; color: var(--muted);
@@ -608,8 +611,8 @@
       setBalanceHeading('Balance');
       amountEl.textContent = '—';
       balanceSub.textContent = '';
-      balPrev.classList.add('hidden');
-      balNext.classList.add('hidden');
+      balPrev.classList.add('invisible');
+      balNext.classList.add('invisible');
       historyBtn.classList.add('hidden');
       reviewBox.classList.add('hidden');
       requestPending.classList.add('hidden');
@@ -631,8 +634,8 @@
         balanceIdx = 0;
         setBalanceHeading('Balance');
         amountEl.textContent = '—';
-        balPrev.classList.add('hidden');
-        balNext.classList.add('hidden');
+        balPrev.classList.add('invisible');
+        balNext.classList.add('invisible');
         historyBtn.classList.add('hidden');
         reviewBox.classList.add('hidden');
         requestPending.classList.add('hidden');
@@ -646,8 +649,8 @@
       var b = list[balanceIdx];
       setBalanceHeading(b.label);
       amountEl.textContent = fmt(b.amount);
-      balPrev.classList.toggle('hidden', balanceIdx <= 0);
-      balNext.classList.toggle('hidden', balanceIdx >= list.length - 1);
+      balPrev.classList.toggle('invisible', balanceIdx <= 0);
+      balNext.classList.toggle('invisible', balanceIdx >= list.length - 1);
       historyBtn.classList.remove('hidden');
       balanceInput.value = ''; // this field is an amount to add/subtract, not the balance
       renderRequestUI(b);
