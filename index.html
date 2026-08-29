@@ -69,6 +69,28 @@
       line-height: 1.1;
     }
     .sub { margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--muted); }
+    #balance-label.editable { cursor: text; }
+    #balance-label.editable:hover { color: var(--text); }
+    #balance-label.editable::after {
+      content: ' \270E';
+      font-size: 0.7em;
+      opacity: 0;
+      transition: opacity 0.12s;
+    }
+    #balance-label.editable:hover::after { opacity: 0.5; }
+    .label-edit {
+      font: inherit;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      text-align: center;
+      width: 100%;
+      max-width: 260px;
+      padding: 0.2rem 0.45rem;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      background: var(--field);
+      color: var(--text);
+    }
     .userbar {
       display: flex;
       align-items: center;
@@ -259,7 +281,7 @@
       </div>
 
       <div id="balance-section">
-        <p class="label">Balance</p>
+        <p class="label" id="balance-label">Balance</p>
         <p class="amount" id="amount">—</p>
         <p class="sub" id="balance-sub"></p>
       </div>
@@ -335,6 +357,7 @@
     var $ = function (id) { return document.getElementById(id); };
     var gate = $('gate'), app = $('app');
     var who = $('who'), roleBadge = $('role-badge'), amountEl = $('amount'), balanceSub = $('balance-sub');
+    var balanceLabelEl = $('balance-label');
     var adminArea = $('admin-area');
     var gateMsg = $('gate-msg'), gateError = $('gate-error'), gateNote = $('gate-note');
     var loginForm = $('login-form'), emailInput = $('email'), pwInput = $('password');
@@ -450,6 +473,59 @@
       balanceSub.textContent = labelText || '';
     }
 
+    function setBalanceHeading(text) {
+      // Don't clobber an in-progress inline edit.
+      if (balanceLabelEl.querySelector('input')) return;
+      balanceLabelEl.textContent = text || 'Balance';
+    }
+
+    // Admin: click the "BALANCE" heading to rename the selected user's balance.
+    function beginLabelEdit() {
+      var u = usersById[userSelect.value];
+      if (!u || balanceLabelEl.querySelector('input')) return;
+      var current = u.balanceLabel || 'Balance';
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.maxLength = 60;
+      input.value = current;
+      input.className = 'label-edit';
+      balanceLabelEl.textContent = '';
+      balanceLabelEl.appendChild(input);
+      input.focus();
+      input.select();
+
+      var settled = false;
+      function finish(save) {
+        if (settled) return;
+        settled = true;
+        var val = input.value.trim();
+        balanceLabelEl.textContent = (save && val) ? val : current;
+        if (!save || val === current) return;
+        adminStatus.textContent = 'Saving…';
+        adminStatus.className = 'msg';
+        apiJson('/balance-label', jsonReq({ userId: u.id, label: val }, 'PUT'))
+          .then(function (res) {
+            u.balanceLabel = res.balanceLabel;
+            setBalanceHeading(res.balanceLabel);
+            adminStatus.textContent = 'Balance renamed to “' + res.balanceLabel + '” for ' + u.name + '.';
+            adminStatus.className = 'msg ok';
+          })
+          .catch(function (err) {
+            setBalanceHeading(u.balanceLabel);
+            adminStatus.textContent = err.message;
+            adminStatus.className = 'msg err';
+          });
+      }
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      });
+      input.addEventListener('blur', function () { finish(true); });
+    }
+    balanceLabelEl.addEventListener('click', function () {
+      if (balanceLabelEl.classList.contains('editable')) beginLabelEdit();
+    });
+
     function enterApp() {
       clearMsgs();
       gate.classList.add('hidden');
@@ -465,6 +541,9 @@
 
         if (me.isAdmin) {
           // Admins have no balance of their own; they manage others.
+          setBalanceHeading('Balance');
+          balanceLabelEl.classList.add('editable');
+          balanceLabelEl.title = 'Click to rename this balance';
           setBalanceView('', '—');
           adminTabs.classList.remove('hidden');
           adminArea.classList.remove('hidden');
@@ -475,6 +554,9 @@
           });
           return;
         }
+        balanceLabelEl.classList.remove('editable');
+        balanceLabelEl.removeAttribute('title');
+        setBalanceHeading(me.balanceLabel);
         setBalanceView('Your balance', me.balance);
         adminTabs.classList.add('hidden');
         adminArea.classList.add('hidden');
@@ -518,6 +600,7 @@
           userSelect.value = (prevUser in usersById) ? prevUser : managed[0].id;
           onUserSelect();
         } else {
+          setBalanceHeading('Balance');
           setBalanceView('', '—');
           closeHistory();
         }
@@ -539,6 +622,7 @@
     function onUserSelect() {
       var u = usersById[userSelect.value];
       if (!u) return;
+      setBalanceHeading(u.balanceLabel);
       var label = u.name + (u.confirmed ? '' : ' · invited, not signed in yet');
       setBalanceView(label, u.balance);
       balanceInput.value = u.balance;
@@ -563,12 +647,13 @@
         historyBody.innerHTML = '<p class="empty">No changes recorded yet.</p>';
         return;
       }
+      var fieldName = { balance: 'balance', name: 'name', label: 'balance name' };
       var ul = document.createElement('ul');
       entries.forEach(function (e) {
         var li = document.createElement('li');
         var what = e.field === 'invited'
           ? ('invited' + (e.to ? ' (' + e.to + ')' : ''))
-          : (e.field + ': ' + fmtVal(e.field, e.from) + ' → ' + fmtVal(e.field, e.to));
+          : ((fieldName[e.field] || e.field) + ': ' + fmtVal(e.field, e.from) + ' → ' + fmtVal(e.field, e.to));
         li.textContent = fmtWhen(e.at) + ' · ' + what + ' · by ' + e.by;
         ul.appendChild(li);
       });

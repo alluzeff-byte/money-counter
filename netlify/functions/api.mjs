@@ -33,6 +33,10 @@ const nameOf = (meta, email) => {
   const n = meta && typeof meta.name === 'string' && meta.name.trim();
   return n || email;
 };
+const labelOf = (meta) => {
+  const l = meta && typeof meta.balanceLabel === 'string' && meta.balanceLabel.trim();
+  return l || 'Balance';
+};
 
 // Append an audit entry to app_metadata.history, keeping the most recent 100.
 const pushHistory = (meta, entry) => {
@@ -79,6 +83,21 @@ export async function handler(event, context) {
   const method = event.httpMethod;
   const admin = rolesOf(user.app_metadata).indexOf('admin') !== -1;
 
+  // Admin-scoped Identity call. Uses the platform admin token; if that token
+  // is rejected (notably under `netlify dev`, which injects a locally-signed
+  // one), retry with the caller's own token, which carries the admin role.
+  const adminFetch = async (path, init) => {
+    if (!identity.token) return idFetch(identity.url, bearer, path, init);
+    try {
+      return await idFetch(identity.url, identity.token, path, init);
+    } catch (err) {
+      if (bearer && /signature is invalid|invalid (jwt|token|claim)|jwt|401|403/i.test(String(err.message))) {
+        return await idFetch(identity.url, bearer, path, init);
+      }
+      throw err;
+    }
+  };
+
   try {
     // GET /me — the caller's own record (fresh, via their own token)
     if (route === '/me' && method === 'GET') {
@@ -91,24 +110,22 @@ export async function handler(event, context) {
         id: user.sub,
         email: user.email,
         name: nameOf(meta, user.email),
+        balanceLabel: labelOf(meta),
         isAdmin: rolesOf(meta).indexOf('admin') !== -1,
         balance: balanceOf(meta),
       });
     }
 
-    // Everything below requires admin + the admin token.
+    // Everything below requires admin.
     if (!admin) return json(403, { error: 'Admin only.' });
-    if (!identity.token) return json(500, { error: 'Identity admin token unavailable.' });
+    if (!identity.token && !bearer) return json(500, { error: 'No usable Identity token.' });
 
     // GET /users — all users with balances
     if (route === '/users' && method === 'GET') {
       const perPage = 200;
       let users = [];
       for (let page = 1; page <= 25; page++) {
-        const data = await idFetch(
-          identity.url, identity.token,
-          `/admin/users?per_page=${perPage}&page=${page}`,
-        );
+        const data = await adminFetch(`/admin/users?per_page=${perPage}&page=${page}`);
         const batch = (data && data.users) || [];
         users = users.concat(batch);
         if (batch.length < perPage) break;
@@ -117,6 +134,7 @@ export async function handler(event, context) {
         id: u.id,
         email: u.email,
         name: nameOf(u.app_metadata, u.email),
+        balanceLabel: labelOf(u.app_metadata),
         isAdmin: rolesOf(u.app_metadata).indexOf('admin') !== -1,
         confirmed: !!u.confirmed_at,
         balance: balanceOf(u.app_metadata),
@@ -133,7 +151,7 @@ export async function handler(event, context) {
       if (!isFinite(n) || n < 0) return json(400, { error: 'balance must be a number >= 0.' });
       const rounded = Math.round(n * 100) / 100;
 
-      const target = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`);
+      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
       if (rolesOf(target.app_metadata).indexOf('admin') !== -1) {
         return json(400, { error: 'Admins do not have a balance.' });
       }
@@ -144,11 +162,38 @@ export async function handler(event, context) {
           at: new Date().toISOString(), by: user.email, field: 'balance', from: prev, to: rounded,
         });
       }
-      const updated = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`, {
+      const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PUT',
         body: JSON.stringify({ app_metadata: merged }),
       });
       return json(200, { userId, balance: balanceOf(updated.app_metadata) });
+    }
+
+    // PUT /balance-label { userId, label } — rename a user's balance heading
+    if (route === '/balance-label' && method === 'PUT') {
+      const { userId, label } = readBody(event);
+      if (!userId) return json(400, { error: 'userId is required.' });
+      const clean = typeof label === 'string' ? label.trim().slice(0, 60) : '';
+
+      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
+      if (rolesOf(target.app_metadata).indexOf('admin') !== -1) {
+        return json(400, { error: 'Admins do not have a balance.' });
+      }
+      const prevLabel = labelOf(target.app_metadata);
+      const merged = { ...(target.app_metadata || {}) };
+      if (!clean || clean.toLowerCase() === 'balance') delete merged.balanceLabel;
+      else merged.balanceLabel = clean;
+      const newLabel = labelOf(merged);
+      if (prevLabel !== newLabel) {
+        merged.history = pushHistory(target.app_metadata, {
+          at: new Date().toISOString(), by: user.email, field: 'label', from: prevLabel, to: newLabel,
+        });
+      }
+      const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ app_metadata: merged }),
+      });
+      return json(200, { userId, balanceLabel: labelOf(updated.app_metadata) });
     }
 
     // PUT /name { userId, name } — assign a display name (blank/email clears it)
@@ -157,7 +202,7 @@ export async function handler(event, context) {
       if (!userId) return json(400, { error: 'userId is required.' });
       const clean = typeof name === 'string' ? name.trim().slice(0, 120) : '';
 
-      const target = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`);
+      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
       const email = target.email;
       const prevName = nameOf(target.app_metadata, email);
       const merged = { ...(target.app_metadata || {}) };
@@ -170,7 +215,7 @@ export async function handler(event, context) {
         });
       }
 
-      const updated = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`, {
+      const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PUT',
         body: JSON.stringify({ app_metadata: merged }),
       });
@@ -181,7 +226,7 @@ export async function handler(event, context) {
     if (route === '/history' && method === 'GET') {
       const userId = (event.queryStringParameters || {}).userId;
       if (!userId) return json(400, { error: 'userId is required.' });
-      const target = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`);
+      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
       const hist = Array.isArray(target.app_metadata && target.app_metadata.history)
         ? target.app_metadata.history.slice().reverse()
         : [];
@@ -195,14 +240,14 @@ export async function handler(event, context) {
         return json(400, { error: 'A valid email is required.' });
       }
       const lc = email.toLowerCase();
-      const created = await idFetch(identity.url, identity.token, '/invite', {
+      const created = await adminFetch('/invite', {
         method: 'POST',
         body: JSON.stringify({ email: lc }),
       });
       // Best-effort: seed the history with the invite event.
       if (created && created.id) {
         try {
-          await idFetch(identity.url, identity.token, `/admin/users/${created.id}`, {
+          await adminFetch(`/admin/users/${created.id}`, {
             method: 'PUT',
             body: JSON.stringify({
               app_metadata: {
