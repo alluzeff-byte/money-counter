@@ -50,6 +50,7 @@ const normBalance = (b, i) => {
     id: String((b && b.id) || i),
     label: cleanLabel(b && b.label),
     amount: money(b && b.amount),
+    archived: !!(b && b.archived),
     history: Array.isArray(b && b.history) ? b.history.slice(-100) : [],
     request: req ? {
       amount: money(req.amount),
@@ -65,7 +66,7 @@ const normBalance = (b, i) => {
 // into the first balance).
 const normBalances = (meta) => {
   const arr = meta && meta.balances;
-  if (Array.isArray(arr) && arr.length) return arr.map(normBalance);
+  if (Array.isArray(arr)) return arr.map(normBalance); // may legitimately be []
   return [normBalance({
     id: 'default',
     label: meta && meta.balanceLabel,
@@ -136,6 +137,7 @@ export async function handler(event, context) {
   const saveBalances = async (userId, targetMeta, balances) => {
     const merged = { ...(targetMeta || {}), balances };
     if (balances[0]) { merged.balance = balances[0].amount; merged.balanceLabel = balances[0].label; }
+    else { delete merged.balance; delete merged.balanceLabel; }
     delete merged.history; // history now lives per balance
     const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
       method: 'PUT',
@@ -230,6 +232,36 @@ export async function handler(event, context) {
       const nb = normBalance({ id: randomUUID(), label: 'Balance', amount: 0 }, balances.length);
       pushBalHist(nb, { at: nowIso(), by: user.email, type: 'created' });
       balances.push(nb);
+      const out = await saveBalances(userId, target.app_metadata, balances);
+      return json(200, { userId, balances: out });
+    }
+
+    // POST /balance-archive { userId, balanceId } — move a balance to Archived
+    if (route === '/balance-archive' && method === 'POST') {
+      const { userId, balanceId } = readBody(event);
+      const target = await loadManagedUser(userId);
+      const balances = normBalances(target.app_metadata);
+      const b = findBalance(balances, balanceId);
+      if (!b) return json(404, { error: 'Balance not found.' });
+      if (!b.archived) {
+        b.archived = true;
+        b.request = null;
+        pushBalHist(b, { at: nowIso(), by: user.email, type: 'archived' });
+      }
+      const out = await saveBalances(userId, target.app_metadata, balances);
+      return json(200, { userId, balances: out });
+    }
+
+    // POST /balance-delete { userId, balanceId } — permanently remove an
+    // archived balance
+    if (route === '/balance-delete' && method === 'POST') {
+      const { userId, balanceId } = readBody(event);
+      const target = await loadManagedUser(userId);
+      const balances = normBalances(target.app_metadata);
+      const i = balances.findIndex((x) => x.id === String(balanceId));
+      if (i === -1) return json(404, { error: 'Balance not found.' });
+      if (!balances[i].archived) return json(400, { error: 'Only archived balances can be deleted.' });
+      balances.splice(i, 1);
       const out = await saveBalances(userId, target.app_metadata, balances);
       return json(200, { userId, balances: out });
     }
