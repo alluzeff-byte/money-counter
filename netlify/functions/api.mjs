@@ -143,16 +143,20 @@ export async function handler(event, context) {
 
   const getUserById = (userId) => adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
 
-  // If a user's stored app_metadata has grown large (long history bloats the
-  // access token, which then gets rejected at the edge), rewrite it with
-  // trimmed balances. Best-effort; never throws.
+  // Rewrite a user's app_metadata with trimmed balances (history capped,
+  // legacy fields dropped) if that would make it smaller. Long history bloats
+  // the access token, which then gets rejected at the edge. Best-effort.
   const healUser = async (userId, meta) => {
     try {
-      if (!meta) return;
-      const size = JSON.stringify(meta.balances || meta.history || 0).length;
-      if (size < 3500 && !meta.history) return;
+      if (!meta || typeof meta !== 'object' || isAdminMeta(meta)) return;
+      const hasBalanceData = Array.isArray(meta.balances)
+        || meta.history != null || meta.balance != null || meta.balanceLabel != null;
+      if (!hasBalanceData) return;
       const cleaned = { ...meta, balances: normBalances(meta) };
       delete cleaned.history;
+      delete cleaned.balance;
+      delete cleaned.balanceLabel;
+      if (JSON.stringify(cleaned).length >= JSON.stringify(meta).length) return; // already minimal
       await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PUT',
         body: JSON.stringify({ app_metadata: cleaned }),
@@ -190,9 +194,9 @@ export async function handler(event, context) {
   // balance is mirrored to the legacy fields for any external reader.
   const saveBalances = async (userId, targetMeta, balances) => {
     const merged = { ...(targetMeta || {}), balances };
-    if (balances[0]) { merged.balance = balances[0].amount; merged.balanceLabel = balances[0].label; }
-    else { delete merged.balance; delete merged.balanceLabel; }
-    delete merged.history; // history now lives per balance
+    delete merged.balance;        // legacy single-balance fields, no longer used
+    delete merged.balanceLabel;
+    delete merged.history;        // history now lives per balance
     const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
       method: 'PUT',
       body: JSON.stringify({ app_metadata: merged }),
