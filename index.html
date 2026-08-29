@@ -183,22 +183,58 @@
 
     if (useNetlifyIdentity) {
       // ---- Netlify Identity (Netlify deployment) ----
+      var widgetReady = false;
+      var openWhenReady = false;
+
+      // Attach handlers immediately so early clicks are never lost.
+      loginBtn.addEventListener('click', function () {
+        if (widgetReady) {
+          window.netlifyIdentity.open('login');
+        } else {
+          openWhenReady = true;
+          loginBtn.textContent = 'Loading…';
+        }
+      });
+      logoutBtn.addEventListener('click', function () {
+        if (widgetReady) window.netlifyIdentity.logout();
+      });
+
+      function showAuthError() {
+        loginBtn.textContent = 'Log in';
+        if (document.getElementById('auth-error')) return;
+        var p = document.createElement('p');
+        p.id = 'auth-error';
+        p.style.color = '#c0392b';
+        p.style.fontSize = '0.8rem';
+        p.style.marginTop = '1rem';
+        p.textContent = 'The login service (identity.netlify.com) could not load — ' +
+          'a browser ad/content blocker or strict privacy mode is the usual cause. ' +
+          'Allow it for this site, or try a private window, then reload.';
+        gate.appendChild(p);
+      }
+
       var s = document.createElement('script');
       s.src = 'https://identity.netlify.com/v1/netlify-identity-widget.js';
       s.onload = function () {
         var ni = window.netlifyIdentity;
+        if (!ni) { showAuthError(); return; }
         function toSession(user) {
           if (!user) return null;
           var roles = (user.app_metadata && user.app_metadata.roles) || [];
           return { email: user.email, isAdmin: roles.indexOf('admin') !== -1 };
         }
-        ni.on('init', function (user) { render(toSession(user)); });
+        ni.on('init', function (user) {
+          widgetReady = true;
+          render(toSession(user));
+          if (openWhenReady) { openWhenReady = false; loginBtn.textContent = 'Log in'; ni.open('login'); }
+        });
         ni.on('login', function (user) { render(toSession(user)); ni.close(); });
         ni.on('logout', function () { render(null); });
-        loginBtn.addEventListener('click', function () { ni.open('login'); });
-        logoutBtn.addEventListener('click', function () { ni.logout(); });
         ni.init();
       };
+      s.onerror = showAuthError;
+      // Fallback: if the widget never initialises within 8s, surface the error.
+      setTimeout(function () { if (!widgetReady) showAuthError(); }, 8000);
       document.head.appendChild(s);
     } else {
       // ---- Azure Static Web Apps built-in auth (Azure deployment) ----
