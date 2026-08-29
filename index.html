@@ -276,6 +276,7 @@
     .hist-amt.minus { color: var(--hist-minus); }
     .hist-bang { color: var(--ok); font-weight: 700; margin-right: 0.3rem; }
     .c-red { color: var(--err); }
+    .c-green { color: var(--ok); }
 
     .modal-backdrop {
       position: fixed;
@@ -815,22 +816,29 @@
       var b = curBal();
       var r = ((b && b.requests) || [])[reqIdx];
       if (!u || !b || !r) return;
-      reviewApprove.disabled = reviewReject.disabled = true;
-      reviewStatus.textContent = 'Working…';
-      reviewStatus.className = 'msg';
-      apiJson(path, jsonReq({ userId: u.id, balanceId: b.id, requestId: r.id, comment: reviewComment.value }, 'POST'))
-        .then(function (res) {
-          u.balances = res.balances;
-          allBalances = res.balances;
-          showBalanceAt(balanceIdx); // resets to the first remaining request
-          adminStatus.textContent = verb + ' — balance ' + (path === '/approve' ? 'topped up.' : 'unchanged.');
-          adminStatus.className = 'msg ok';
-        })
-        .catch(function (err) {
-          reviewStatus.textContent = err.message;
-          reviewStatus.className = 'msg err';
-        })
-        .then(function () { reviewApprove.disabled = reviewReject.disabled = false; });
+      var msg = (path === '/approve')
+        ? 'Approve ' + fmt(r.amount) + ' top-up for ' + u.name + ' on “' + b.label + '”?\n\n'
+          + fmt(b.amount) + ' → ' + fmt(b.amount + r.amount)
+        : 'Reject the ' + fmt(r.amount) + ' top-up request for ' + u.name + ' on “' + b.label + '”?';
+      askConfirm(msg).then(function (ok) {
+        if (!ok) return;
+        reviewApprove.disabled = reviewReject.disabled = true;
+        reviewStatus.textContent = 'Working…';
+        reviewStatus.className = 'msg';
+        apiJson(path, jsonReq({ userId: u.id, balanceId: b.id, requestId: r.id, comment: reviewComment.value }, 'POST'))
+          .then(function (res) {
+            u.balances = res.balances;
+            allBalances = res.balances;
+            showBalanceAt(balanceIdx); // resets to the first remaining request
+            adminStatus.textContent = verb + ' — balance ' + (path === '/approve' ? 'topped up.' : 'unchanged.');
+            adminStatus.className = 'msg ok';
+          })
+          .catch(function (err) {
+            reviewStatus.textContent = err.message;
+            reviewStatus.className = 'msg err';
+          })
+          .then(function () { reviewApprove.disabled = reviewReject.disabled = false; });
+      });
     }
     reviewApprove.addEventListener('click', function () { reviewAction('/approve', 'Approved'); });
     reviewReject.addEventListener('click', function () { reviewAction('/reject', 'Rejected'); });
@@ -1097,17 +1105,18 @@
     }
     function quote(v) { return '“' + (v == null ? '' : v) + '”'; }
 
-    // Render comment text: $$…$$ becomes bold, %%…%% becomes red; delimiters dropped.
+    // Render comment text: $$…$$ bold, %%…%% red, ^^…^^ green; delimiters dropped.
     function fmtComment(str) {
       var frag = document.createDocumentFragment();
       var s = String(str == null ? '' : str);
-      var re = /\$\$([\s\S]+?)\$\$|%%([\s\S]+?)%%/g;
+      var re = /\$\$([\s\S]+?)\$\$|%%([\s\S]+?)%%|\^\^([\s\S]+?)\^\^/g;
       var last = 0, m;
       while ((m = re.exec(s))) {
         if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
         var el, txt;
         if (m[1] != null) { el = document.createElement('b'); txt = m[1]; }
-        else { el = document.createElement('span'); el.className = 'c-red'; txt = m[2]; }
+        else if (m[2] != null) { el = document.createElement('span'); el.className = 'c-red'; txt = m[2]; }
+        else { el = document.createElement('span'); el.className = 'c-green'; txt = m[3]; }
         el.textContent = txt;
         frag.appendChild(el);
         last = re.lastIndex;
