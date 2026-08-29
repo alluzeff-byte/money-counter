@@ -12,6 +12,8 @@
       --muted: #6b7280;
       --accent: #0b6e4f;
       --border: #e2e6ea;
+      --field: #ffffff;
+      --err: #c0392b;
       --badge-admin-bg: #0b6e4f;
       --badge-user-bg: #3454d1;
     }
@@ -23,6 +25,8 @@
         --muted: #9aa3b2;
         --accent: #35d0a0;
         --border: #2c303c;
+        --field: #12141c;
+        --err: #ff6b6b;
         --badge-admin-bg: #147a58;
         --badge-user-bg: #3f5bd9;
       }
@@ -99,6 +103,25 @@
       color: #fff;
       font-weight: 600;
     }
+    button[disabled] { opacity: 0.6; cursor: default; }
+    #login-form { display: flex; flex-direction: column; gap: 0.6rem; margin: 1rem 0 0.25rem; text-align: left; }
+    #login-form input {
+      font: inherit;
+      padding: 0.6rem 0.75rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--field);
+      color: var(--text);
+      width: 100%;
+    }
+    #login-form button { margin-top: 0.25rem; }
+    .link-btn {
+      background: none; border: none; padding: 0.4rem;
+      color: var(--muted); text-decoration: underline;
+      font-size: 0.8rem; cursor: pointer;
+    }
+    .msg { color: var(--muted); margin: 0.5rem 0 0; font-size: 0.85rem; }
+    .err { color: var(--err); margin: 0.6rem 0 0; font-size: 0.83rem; }
     .admin-area {
       margin-top: 1.75rem;
       padding-top: 1rem;
@@ -115,7 +138,7 @@
       color: var(--text);
     }
     .hidden { display: none !important; }
-    .gate p { color: var(--muted); margin: 0.5rem 0 1.5rem; }
+    .gate p { color: var(--muted); margin: 0.5rem 0 0; }
   </style>
 </head>
 <body>
@@ -123,8 +146,21 @@
     <!-- Shown when logged out -->
     <section id="gate" class="gate hidden">
       <p class="label">Money Counter</p>
-      <p>You need to sign in to view this page.</p>
-      <button class="primary" id="login-btn">Log in</button>
+      <p id="gate-msg">Sign in to view this page.</p>
+
+      <!-- Email/password form (Netlify) -->
+      <form id="login-form">
+        <input type="email" id="email" placeholder="Email" autocomplete="username" required>
+        <input type="password" id="password" placeholder="Password" autocomplete="current-password" required>
+        <button type="submit" class="primary" id="submit-btn">Log in</button>
+      </form>
+      <button type="button" class="link-btn" id="forgot-btn">Forgot password?</button>
+
+      <!-- SSO button (Azure) -->
+      <button type="button" class="primary hidden" id="sso-btn">Sign in with GitHub</button>
+
+      <p id="gate-error" class="err hidden"></p>
+      <p id="gate-note" class="msg hidden"></p>
     </section>
 
     <!-- Shown when logged in -->
@@ -153,16 +189,14 @@
       style: 'currency', currency: 'GBP', minimumFractionDigits: 0
     }).format(value);
 
-    var gate = document.getElementById('gate');
-    var app = document.getElementById('app');
-    var who = document.getElementById('who');
-    var roleBadge = document.getElementById('role-badge');
-    var adminArea = document.getElementById('admin-area');
-    var amountEl = document.getElementById('amount');
-    var loginBtn = document.getElementById('login-btn');
-    var logoutBtn = document.getElementById('logout-btn');
+    var $ = function (id) { return document.getElementById(id); };
+    var gate = $('gate'), app = $('app');
+    var who = $('who'), roleBadge = $('role-badge'), adminArea = $('admin-area'), amountEl = $('amount');
+    var gateMsg = $('gate-msg'), gateError = $('gate-error'), gateNote = $('gate-note');
+    var loginForm = $('login-form'), emailInput = $('email'), pwInput = $('password');
+    var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), ssoBtn = $('sso-btn'), logoutBtn = $('logout-btn');
 
-    // Normalised session: null, or { email, isAdmin }
+    // session: null, or { email, isAdmin }
     function render(session) {
       if (!session) {
         app.classList.add('hidden');
@@ -177,89 +211,23 @@
       gate.classList.add('hidden');
       app.classList.remove('hidden');
     }
+    function showError(msg) { gateError.textContent = msg; gateError.classList.remove('hidden'); gateNote.classList.add('hidden'); }
+    function showNote(msg) { gateNote.textContent = msg; gateNote.classList.remove('hidden'); gateError.classList.add('hidden'); }
+    function clearMsgs() { gateError.classList.add('hidden'); gateNote.classList.add('hidden'); }
 
     var host = location.hostname;
     var useNetlifyIdentity = /(^|\.)netlify\.app$/.test(host) || host === 'localhost' || host === '127.0.0.1';
 
-    if (useNetlifyIdentity) {
-      // ---- Netlify Identity (Netlify deployment) ----
-      var widgetReady = false;
-      var openWhenReady = false;
-
-      // Attach handlers immediately so early clicks are never lost.
-      loginBtn.addEventListener('click', function () {
-        if (widgetReady) {
-          window.netlifyIdentity.open('login');
-        } else {
-          openWhenReady = true;
-          loginBtn.textContent = 'Loading…';
-        }
-      });
-      logoutBtn.addEventListener('click', function () {
-        if (!widgetReady) return;
-        var done = false;
-        function finish() {
-          if (done) return;
-          done = true;
-          try { window.localStorage.removeItem('gotrue.user'); } catch (e) {}
-          render(null);
-        }
-        try {
-          var r = window.netlifyIdentity.logout();
-          if (r && typeof r.then === 'function') { r.then(finish, finish); }
-        } catch (e) { /* ignore */ }
-        // Belt-and-braces: the widget's logout event/promise sometimes never
-        // resolves (stale token). Reset the UI and drop the local token anyway.
-        setTimeout(finish, 600);
-      });
-
-      function showAuthError() {
-        loginBtn.textContent = 'Log in';
-        if (document.getElementById('auth-error')) return;
-        var p = document.createElement('p');
-        p.id = 'auth-error';
-        p.style.color = '#c0392b';
-        p.style.fontSize = '0.8rem';
-        p.style.marginTop = '1rem';
-        p.textContent = 'The login widget could not load or start. Try a hard reload ' +
-          '(Ctrl+Shift+R); if it persists, a browser extension may be interfering — ' +
-          'test in a private window.';
-        gate.appendChild(p);
-      }
-
-      var s = document.createElement('script');
-      // Self-hosted (same origin) so ad/content blockers targeting
-      // identity.netlify.com can't stop the login widget from loading.
-      s.src = 'vendor/netlify-identity-widget.js';
-      s.onload = function () {
-        var ni = window.netlifyIdentity;
-        if (!ni) { showAuthError(); return; }
-        function toSession(user) {
-          if (!user) return null;
-          var roles = (user.app_metadata && user.app_metadata.roles) || [];
-          return { email: user.email, isAdmin: roles.indexOf('admin') !== -1 };
-        }
-        ni.on('init', function (user) {
-          widgetReady = true;
-          render(toSession(user));
-          if (openWhenReady) { openWhenReady = false; loginBtn.textContent = 'Log in'; ni.open('login'); }
-        });
-        ni.on('login', function (user) { render(toSession(user)); ni.close(); });
-        ni.on('logout', function () { render(null); });
-        ni.init();
-      };
-      s.onerror = showAuthError;
-      // Fallback: if the widget never initialises within 8s, surface the error.
-      setTimeout(function () { if (!widgetReady) showAuthError(); }, 8000);
-      document.head.appendChild(s);
-    } else {
-      // ---- Azure Static Web Apps built-in auth (Azure deployment) ----
-      loginBtn.addEventListener('click', function () {
+    if (!useNetlifyIdentity) {
+      // ================= Azure Static Web Apps built-in auth =================
+      loginForm.classList.add('hidden');
+      forgotBtn.classList.add('hidden');
+      ssoBtn.classList.remove('hidden');
+      gateMsg.textContent = 'Sign in to view this page.';
+      ssoBtn.addEventListener('click', function () {
         window.location.href = '/.auth/login/github?post_login_redirect_uri=%2F';
       });
       logoutBtn.addEventListener('click', function () {
-        // Land on /login, which is anonymous-viewable, so logout doesn't
-        // bounce straight back through GitHub SSO and silently re-login.
         window.location.href = '/.auth/logout?post_logout_redirect_uri=%2Flogin';
       });
       fetch('/.auth/me', { credentials: 'same-origin' })
@@ -267,14 +235,178 @@
         .then(function (data) {
           var p = data && data.clientPrincipal;
           if (!p) { render(null); return; }
-          var roles = p.userRoles || [];
-          render({
-            email: p.userDetails,
-            isAdmin: roles.indexOf('admin') !== -1
-          });
+          render({ email: p.userDetails, isAdmin: (p.userRoles || []).indexOf('admin') !== -1 });
         })
         .catch(function () { render(null); });
+      return;
     }
+
+    // ================= Netlify Identity (GoTrue REST, same-origin) =================
+    var API = '/.netlify/identity';
+    var STORE = 'mc.session';
+
+    function saveTokens(t) {
+      var s = {
+        access_token: t.access_token,
+        refresh_token: t.refresh_token,
+        expires_at: Date.now() + ((t.expires_in || 3600) * 1000)
+      };
+      try { localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) {}
+      return s;
+    }
+    function loadTokens() {
+      try { return JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { return null; }
+    }
+    function clearTokens() { try { localStorage.removeItem(STORE); } catch (e) {} }
+
+    function form(body) {
+      return {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: Object.keys(body).map(function (k) {
+          return encodeURIComponent(k) + '=' + encodeURIComponent(body[k]);
+        }).join('&')
+      };
+    }
+    function json(body) {
+      return { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    }
+    function parseErr(data, fallback) {
+      return (data && (data.error_description || data.msg || data.error)) || fallback;
+    }
+
+    function passwordGrant(email, pw) {
+      return fetch(API + '/token', form({ grant_type: 'password', username: email, password: pw }))
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) throw new Error(parseErr(res.d, 'Sign in failed. Check your email and password.'));
+          return saveTokens(res.d);
+        });
+    }
+    function refreshGrant(rt) {
+      return fetch(API + '/token', form({ grant_type: 'refresh_token', refresh_token: rt }))
+        .then(function (r) { if (!r.ok) throw new Error('refresh failed'); return r.json(); })
+        .then(saveTokens);
+    }
+    function fetchUser(at) {
+      return fetch(API + '/user', { headers: { Authorization: 'Bearer ' + at } })
+        .then(function (r) { if (!r.ok) throw new Error('user ' + r.status); return r.json(); });
+    }
+    function toSession(u) {
+      var roles = (u.app_metadata && u.app_metadata.roles) || [];
+      return { email: u.email, isAdmin: roles.indexOf('admin') !== -1 };
+    }
+
+    // Restore an existing session on page load (refresh the token if stale).
+    function restore() {
+      var s = loadTokens();
+      if (!s || !s.access_token) { render(null); return; }
+      var stale = !s.expires_at || s.expires_at < Date.now() + 60000;
+      var ready = stale && s.refresh_token
+        ? refreshGrant(s.refresh_token)
+        : Promise.resolve(s);
+      ready
+        .then(function (fresh) { return fetchUser(fresh.access_token); })
+        .then(function (u) { render(toSession(u)); })
+        .catch(function () {
+          // One more try via refresh, then give up to the login form.
+          var cur = loadTokens();
+          if (cur && cur.refresh_token) {
+            return refreshGrant(cur.refresh_token)
+              .then(function (fresh) { return fetchUser(fresh.access_token); })
+              .then(function (u) { render(toSession(u)); })
+              .catch(function () { clearTokens(); render(null); });
+          }
+          clearTokens(); render(null);
+        });
+    }
+
+    // ---- Invite / recovery links: #invite_token=... or #recovery_token=... ----
+    var hash = new URLSearchParams((location.hash || '').replace(/^#\/?/, ''));
+    var inviteToken = hash.get('invite_token');
+    var recoveryToken = hash.get('recovery_token');
+    var mode = inviteToken ? 'invite' : (recoveryToken ? 'recovery' : 'login');
+
+    function stripHash() {
+      try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { location.hash = ''; }
+    }
+
+    if (mode === 'invite' || mode === 'recovery') {
+      gate.classList.remove('hidden');
+      emailInput.classList.add('hidden');
+      emailInput.removeAttribute('required');
+      forgotBtn.classList.add('hidden');
+      pwInput.setAttribute('autocomplete', 'new-password');
+      pwInput.placeholder = 'Choose a password';
+      submitBtn.textContent = mode === 'invite' ? 'Set password & sign in' : 'Reset password & sign in';
+      gateMsg.textContent = mode === 'invite'
+        ? 'You have been invited. Choose a password to finish.'
+        : 'Choose a new password.';
+    } else {
+      restore();
+    }
+
+    loginForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      clearMsgs();
+      var pw = pwInput.value;
+      submitBtn.disabled = true;
+      var original = submitBtn.textContent;
+      submitBtn.textContent = 'Working…';
+      var done = function () { submitBtn.disabled = false; submitBtn.textContent = original; };
+
+      var flow;
+      if (mode === 'invite') {
+        flow = fetch(API + '/verify', json({ type: 'signup', token: inviteToken, password: pw }))
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+          .then(function (res) {
+            if (!res.ok) throw new Error(parseErr(res.d, 'This invite link is invalid or expired. Ask for a new invite.'));
+            saveTokens(res.d); stripHash(); mode = 'login';
+            return fetchUser(res.d.access_token);
+          });
+      } else if (mode === 'recovery') {
+        flow = fetch(API + '/verify', json({ type: 'recovery', token: recoveryToken }))
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+          .then(function (res) {
+            if (!res.ok) throw new Error(parseErr(res.d, 'This reset link is invalid or expired.'));
+            var s = saveTokens(res.d);
+            return fetch(API + '/user', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + s.access_token },
+              body: JSON.stringify({ password: pw })
+            }).then(function (r) { if (!r.ok) throw new Error('Could not set the new password.'); return r.json(); })
+              .then(function (u) { stripHash(); mode = 'login'; return u; });
+          });
+      } else {
+        flow = passwordGrant(emailInput.value.trim(), pw)
+          .then(function (s) { return fetchUser(s.access_token); });
+      }
+
+      flow
+        .then(function (u) { done(); pwInput.value = ''; render(toSession(u)); })
+        .catch(function (err) { done(); showError(err.message || 'Something went wrong.'); });
+    });
+
+    forgotBtn.addEventListener('click', function () {
+      clearMsgs();
+      var email = emailInput.value.trim();
+      if (!email) { showError('Enter your email above first, then click "Forgot password?".'); return; }
+      fetch(API + '/recover', json({ email: email }))
+        .then(function () {
+          showNote('If that email has an account, a password-reset link is on its way. Check your inbox and spam.');
+        })
+        .catch(function () { showNote('If that email has an account, a reset link is on its way.'); });
+    });
+
+    logoutBtn.addEventListener('click', function () {
+      var s = loadTokens();
+      clearTokens();
+      render(null);
+      if (s && s.access_token) {
+        fetch(API + '/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + s.access_token } })
+          .catch(function () {});
+      }
+    });
   })();
   </script>
 </body>
