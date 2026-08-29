@@ -34,6 +34,13 @@ const nameOf = (meta, email) => {
   return n || email;
 };
 
+// Append an audit entry to app_metadata.history, keeping the most recent 100.
+const pushHistory = (meta, entry) => {
+  const hist = Array.isArray(meta && meta.history) ? meta.history.slice() : [];
+  hist.push(entry);
+  return hist.slice(-100);
+};
+
 // Call the Netlify Identity (GoTrue) API. `token` is either the caller's
 // access token (for /user) or the admin token from clientContext.identity.
 const idFetch = async (baseUrl, token, path, init = {}) => {
@@ -130,7 +137,13 @@ export async function handler(event, context) {
       if (rolesOf(target.app_metadata).indexOf('admin') !== -1) {
         return json(400, { error: 'Admins do not have a balance.' });
       }
+      const prev = balanceOf(target.app_metadata);
       const merged = { ...(target.app_metadata || {}), balance: rounded };
+      if (prev !== rounded) {
+        merged.history = pushHistory(target.app_metadata, {
+          at: new Date().toISOString(), by: user.email, field: 'balance', from: prev, to: rounded,
+        });
+      }
       const updated = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PUT',
         body: JSON.stringify({ app_metadata: merged }),
@@ -145,16 +158,34 @@ export async function handler(event, context) {
       const clean = typeof name === 'string' ? name.trim().slice(0, 120) : '';
 
       const target = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`);
+      const email = target.email;
+      const prevName = nameOf(target.app_metadata, email);
       const merged = { ...(target.app_metadata || {}) };
-      if (!clean || clean === target.email) delete merged.name;
+      if (!clean || clean === email) delete merged.name;
       else merged.name = clean;
+      const newName = nameOf(merged, email);
+      if (prevName !== newName) {
+        merged.history = pushHistory(target.app_metadata, {
+          at: new Date().toISOString(), by: user.email, field: 'name', from: prevName, to: newName,
+        });
+      }
 
       const updated = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PUT',
         body: JSON.stringify({ app_metadata: merged }),
       });
-      const email = updated.email || target.email;
       return json(200, { userId, name: nameOf(updated.app_metadata, email), email });
+    }
+
+    // GET /history?userId=... — audit trail for one user (newest first)
+    if (route === '/history' && method === 'GET') {
+      const userId = (event.queryStringParameters || {}).userId;
+      if (!userId) return json(400, { error: 'userId is required.' });
+      const target = await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(userId)}`);
+      const hist = Array.isArray(target.app_metadata && target.app_metadata.history)
+        ? target.app_metadata.history.slice().reverse()
+        : [];
+      return json(200, { userId, email: target.email, history: hist });
     }
 
     // POST /invite { email } — send a Netlify Identity invite
@@ -163,11 +194,28 @@ export async function handler(event, context) {
       if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
         return json(400, { error: 'A valid email is required.' });
       }
-      await idFetch(identity.url, identity.token, '/invite', {
+      const lc = email.toLowerCase();
+      const created = await idFetch(identity.url, identity.token, '/invite', {
         method: 'POST',
-        body: JSON.stringify({ email: email.toLowerCase() }),
+        body: JSON.stringify({ email: lc }),
       });
-      return json(200, { invited: email.toLowerCase() });
+      // Best-effort: seed the history with the invite event.
+      if (created && created.id) {
+        try {
+          await idFetch(identity.url, identity.token, `/admin/users/${created.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              app_metadata: {
+                ...(created.app_metadata || {}),
+                history: pushHistory(created.app_metadata, {
+                  at: new Date().toISOString(), by: user.email, field: 'invited', to: lc,
+                }),
+              },
+            }),
+          });
+        } catch { /* non-fatal */ }
+      }
+      return json(200, { invited: lc });
     }
 
     return json(404, { error: `No route for ${method} ${route}` });

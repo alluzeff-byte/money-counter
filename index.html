@@ -164,6 +164,11 @@
     .row input { flex: 1; }
     .row button { white-space: nowrap; }
     .admin-area hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
+    .history { margin-top: 0.75rem; font-size: 0.8rem; }
+    .history ul { list-style: none; margin: 0; padding: 0; }
+    .history li { padding: 0.45rem 0; border-top: 1px solid var(--border); color: var(--muted); }
+    .history li:first-child { border-top: none; }
+    .history .empty { color: var(--muted); margin: 0; }
     .hidden { display: none !important; }
   </style>
 </head>
@@ -221,6 +226,10 @@
             </span>
           </label>
           <p class="msg" id="admin-status"></p>
+
+          <button type="button" id="history-btn" class="hidden">History</button>
+          <div class="history hidden" id="history-panel"></div>
+
           <p class="msg hidden" id="no-users-msg">No users yet. Invite someone from the Config tab.</p>
         </div>
 
@@ -273,6 +282,7 @@
     var userPicker = $('user-picker'), balanceEditor = $('balance-editor'), noUsersMsg = $('no-users-msg');
     var adminTabs = $('admin-tabs'), balanceSection = $('balance-section');
     var nameUserSelect = $('name-user-select'), nameInput = $('name-input'), saveNameBtn = $('save-name-btn'), nameStatus = $('name-status');
+    var historyBtn = $('history-btn'), historyPanel = $('history-panel');
     var tabButtons = document.querySelectorAll('.tab'), tabPanels = { users: $('panel-users'), config: $('panel-config') };
 
     function selectTab(name) {
@@ -439,21 +449,23 @@
         var hasUsers = managed.length > 0;
         userPicker.classList.toggle('hidden', !hasUsers);
         balanceEditor.classList.toggle('hidden', !hasUsers);
+        historyBtn.classList.toggle('hidden', !hasUsers);
         noUsersMsg.classList.toggle('hidden', hasUsers);
         if (hasUsers) {
           userSelect.value = (prevUser in usersById) ? prevUser : managed[0].id;
           onUserSelect();
         } else {
           setBalanceView('', '—');
+          historyPanel.classList.add('hidden');
         }
 
-        // --- Config tab: name dropdown lists everyone, incl. admins ---
+        // --- Config tab: name dropdown lists everyone by email, incl. admins ---
         var prevName = nameUserSelect.value;
         nameUserSelect.innerHTML = '';
         all.forEach(function (u) {
           var o = document.createElement('option');
           o.value = u.id;
-          o.textContent = u.name + (u.isAdmin ? ' · admin' : '') + invitedSuffix(u);
+          o.textContent = u.email;
           nameUserSelect.appendChild(o);
         });
         nameUserSelect.value = (prevName && allUsersById[prevName]) ? prevName : selfId;
@@ -469,7 +481,54 @@
       balanceInput.value = u.balance;
       adminStatus.textContent = '';
       adminStatus.className = 'msg';
+      // Collapse any open history from the previous user.
+      historyPanel.classList.add('hidden');
+      historyPanel.innerHTML = '';
     }
+
+    function fmtWhen(iso) {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleString('en-GB', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+    }
+    function fmtVal(field, v) {
+      return field === 'balance' ? fmt(v) : ('“' + v + '”');
+    }
+    function renderHistory(entries) {
+      if (!entries || !entries.length) {
+        historyPanel.innerHTML = '<p class="empty">No changes recorded yet.</p>';
+        return;
+      }
+      var ul = document.createElement('ul');
+      entries.forEach(function (e) {
+        var li = document.createElement('li');
+        var what = e.field === 'invited'
+          ? ('invited' + (e.to ? ' (' + e.to + ')' : ''))
+          : (e.field + ': ' + fmtVal(e.field, e.from) + ' → ' + fmtVal(e.field, e.to));
+        li.textContent = fmtWhen(e.at) + ' · ' + what + ' · by ' + e.by;
+        ul.appendChild(li);
+      });
+      historyPanel.innerHTML = '';
+      historyPanel.appendChild(ul);
+    }
+
+    historyBtn.addEventListener('click', function () {
+      var u = usersById[userSelect.value];
+      if (!u) return;
+      if (!historyPanel.classList.contains('hidden')) {
+        historyPanel.classList.add('hidden');
+        return;
+      }
+      historyPanel.classList.remove('hidden');
+      historyPanel.innerHTML = '<p class="empty">Loading…</p>';
+      apiJson('/history?userId=' + encodeURIComponent(u.id))
+        .then(function (res) { renderHistory(res.history); })
+        .catch(function (err) {
+          historyPanel.innerHTML = '<p class="empty">' + (err.message || 'Could not load history.') + '</p>';
+        });
+    });
 
     function onNameUserSelect() {
       var u = allUsersById[nameUserSelect.value];
