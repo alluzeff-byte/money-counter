@@ -375,7 +375,11 @@
 
         if (me.isAdmin) {
           adminArea.classList.remove('hidden');
-          return loadUsers();
+          loadUsers().catch(function (err) {
+            adminStatus.textContent = 'Could not load users: ' + (err.message || 'server error');
+            adminStatus.className = 'msg err';
+          });
+          return;
         }
         adminArea.classList.add('hidden');
       }).catch(function (err) {

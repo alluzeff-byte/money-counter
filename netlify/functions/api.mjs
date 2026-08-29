@@ -90,8 +90,17 @@ export async function handler(event, context) {
 
     // GET /users — all users with balances
     if (route === '/users' && method === 'GET') {
-      const data = await idFetch(identity.url, identity.token, '/admin/users?per_page=1000');
-      const users = (data && data.users) || [];
+      const perPage = 200;
+      let users = [];
+      for (let page = 1; page <= 25; page++) {
+        const data = await idFetch(
+          identity.url, identity.token,
+          `/admin/users?per_page=${perPage}&page=${page}`,
+        );
+        const batch = (data && data.users) || [];
+        users = users.concat(batch);
+        if (batch.length < perPage) break;
+      }
       const rows = users.map((u) => ({
         id: u.id,
         email: u.email,
