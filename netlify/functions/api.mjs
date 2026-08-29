@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 // Money Counter API — per-user GBP balances.
 //
 // Auth comes from the Netlify Identity JWT that Netlify decodes into
@@ -25,17 +27,34 @@ const routeOf = (event) => {
 };
 
 const rolesOf = (meta) => (meta && meta.roles) || [];
-const balanceOf = (meta) => {
-  const b = meta && meta.balance;
-  return typeof b === 'number' && isFinite(b) ? b : 0;
-};
+const isAdminMeta = (meta) => rolesOf(meta).indexOf('admin') !== -1;
 const nameOf = (meta, email) => {
   const n = meta && typeof meta.name === 'string' && meta.name.trim();
   return n || email;
 };
-const labelOf = (meta) => {
-  const l = meta && typeof meta.balanceLabel === 'string' && meta.balanceLabel.trim();
-  return l || 'Balance';
+
+const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
+const cleanLabel = (v) => {
+  const s = typeof v === 'string' ? v.trim().slice(0, 60) : '';
+  return !s || s.toLowerCase() === 'balance' ? 'Balance' : s;
+};
+
+// A user's balances as a normalised [{ id, label, amount }] array.
+// Falls back to the legacy single `balance` / `balanceLabel` fields.
+const normBalances = (meta) => {
+  const arr = meta && meta.balances;
+  if (Array.isArray(arr) && arr.length) {
+    return arr.map((b, i) => ({
+      id: String((b && b.id) || i),
+      label: cleanLabel(b && b.label),
+      amount: Math.max(0, Math.round(num(b && b.amount) * 100) / 100),
+    }));
+  }
+  return [{
+    id: 'default',
+    label: cleanLabel(meta && meta.balanceLabel),
+    amount: Math.max(0, Math.round(num(meta && meta.balance) * 100) / 100),
+  }];
 };
 
 // Append an audit entry to app_metadata.history, keeping the most recent 100.
@@ -106,13 +125,13 @@ export async function handler(event, context) {
         const fresh = await idFetch(identity.url, bearer, '/user');
         if (fresh && fresh.app_metadata) meta = fresh.app_metadata;
       } catch { /* fall back to JWT copy */ }
+      const balances = normBalances(meta);
       return json(200, {
         id: user.sub,
         email: user.email,
         name: nameOf(meta, user.email),
-        balanceLabel: labelOf(meta),
         isAdmin: rolesOf(meta).indexOf('admin') !== -1,
-        balance: balanceOf(meta),
+        balances,
       });
     }
 
@@ -120,7 +139,30 @@ export async function handler(event, context) {
     if (!admin) return json(403, { error: 'Admin only.' });
     if (!identity.token && !bearer) return json(500, { error: 'No usable Identity token.' });
 
-    // GET /users — all users with balances
+    // Load a non-admin target user, or fail with a useful message.
+    const loadManagedUser = async (userId) => {
+      if (!userId) { const e = new Error('userId is required.'); e.status = 400; throw e; }
+      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
+      if (isAdminMeta(target.app_metadata)) {
+        const e = new Error('Admins do not have balances.'); e.status = 400; throw e;
+      }
+      return target;
+    };
+
+    // Persist a balances array (+ optional history entry) and return the
+    // normalised result. Also mirrors the first balance to the legacy fields.
+    const saveBalances = async (userId, targetMeta, balances, historyEntry) => {
+      const merged = { ...(targetMeta || {}), balances };
+      if (balances[0]) { merged.balance = balances[0].amount; merged.balanceLabel = balances[0].label; }
+      if (historyEntry) merged.history = pushHistory(targetMeta, historyEntry);
+      const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ app_metadata: merged }),
+      });
+      return normBalances(updated.app_metadata);
+    };
+
+    // GET /users — all users with their balances
     if (route === '/users' && method === 'GET') {
       const perPage = 200;
       let users = [];
@@ -134,66 +176,60 @@ export async function handler(event, context) {
         id: u.id,
         email: u.email,
         name: nameOf(u.app_metadata, u.email),
-        balanceLabel: labelOf(u.app_metadata),
-        isAdmin: rolesOf(u.app_metadata).indexOf('admin') !== -1,
+        isAdmin: isAdminMeta(u.app_metadata),
         confirmed: !!u.confirmed_at,
-        balance: balanceOf(u.app_metadata),
+        balances: normBalances(u.app_metadata),
       }));
       rows.sort((a, b) => a.name.localeCompare(b.name));
       return json(200, { users: rows });
     }
 
-    // PUT /balance { userId, balance } — set a user's balance
-    if (route === '/balance' && method === 'PUT') {
-      const { userId, balance } = readBody(event);
-      if (!userId) return json(400, { error: 'userId is required.' });
-      const n = Number(balance);
-      if (!isFinite(n) || n < 0) return json(400, { error: 'balance must be a number >= 0.' });
-      const rounded = Math.round(n * 100) / 100;
-
-      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
-      if (rolesOf(target.app_metadata).indexOf('admin') !== -1) {
-        return json(400, { error: 'Admins do not have a balance.' });
-      }
-      const prev = balanceOf(target.app_metadata);
-      const merged = { ...(target.app_metadata || {}), balance: rounded };
-      if (prev !== rounded) {
-        merged.history = pushHistory(target.app_metadata, {
-          at: new Date().toISOString(), by: user.email, field: 'balance', from: prev, to: rounded,
-        });
-      }
-      const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ app_metadata: merged }),
+    // POST /balances { userId } — add a new empty balance
+    if (route === '/balances' && method === 'POST') {
+      const { userId } = readBody(event);
+      const target = await loadManagedUser(userId);
+      const balances = normBalances(target.app_metadata);
+      balances.push({ id: randomUUID(), label: 'Balance', amount: 0 });
+      const out = await saveBalances(userId, target.app_metadata, balances, {
+        at: new Date().toISOString(), by: user.email, field: 'balance-added',
       });
-      return json(200, { userId, balance: balanceOf(updated.app_metadata) });
+      return json(200, { userId, balances: out });
     }
 
-    // PUT /balance-label { userId, label } — rename a user's balance heading
-    if (route === '/balance-label' && method === 'PUT') {
-      const { userId, label } = readBody(event);
-      if (!userId) return json(400, { error: 'userId is required.' });
-      const clean = typeof label === 'string' ? label.trim().slice(0, 60) : '';
+    // PUT /balance { userId, balanceId, amount } — set one balance's amount
+    if (route === '/balance' && method === 'PUT') {
+      const { userId, balanceId, amount } = readBody(event);
+      const n = Number(amount);
+      if (!isFinite(n) || n < 0) return json(400, { error: 'amount must be a number >= 0.' });
+      const rounded = Math.round(n * 100) / 100;
 
-      const target = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`);
-      if (rolesOf(target.app_metadata).indexOf('admin') !== -1) {
-        return json(400, { error: 'Admins do not have a balance.' });
-      }
-      const prevLabel = labelOf(target.app_metadata);
-      const merged = { ...(target.app_metadata || {}) };
-      if (!clean || clean.toLowerCase() === 'balance') delete merged.balanceLabel;
-      else merged.balanceLabel = clean;
-      const newLabel = labelOf(merged);
-      if (prevLabel !== newLabel) {
-        merged.history = pushHistory(target.app_metadata, {
-          at: new Date().toISOString(), by: user.email, field: 'label', from: prevLabel, to: newLabel,
-        });
-      }
-      const updated = await adminFetch(`/admin/users/${encodeURIComponent(userId)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ app_metadata: merged }),
-      });
-      return json(200, { userId, balanceLabel: labelOf(updated.app_metadata) });
+      const target = await loadManagedUser(userId);
+      const balances = normBalances(target.app_metadata);
+      const b = balances.find((x) => x.id === String(balanceId)) || (balanceId == null && balances[0]);
+      if (!b) return json(404, { error: 'Balance not found.' });
+      const prev = b.amount;
+      b.amount = rounded;
+      const out = await saveBalances(userId, target.app_metadata, balances,
+        prev !== rounded
+          ? { at: new Date().toISOString(), by: user.email, field: 'balance', balanceLabel: b.label, from: prev, to: rounded }
+          : null);
+      return json(200, { userId, balances: out });
+    }
+
+    // PUT /balance-label { userId, balanceId, label } — rename one balance
+    if (route === '/balance-label' && method === 'PUT') {
+      const { userId, balanceId, label } = readBody(event);
+      const target = await loadManagedUser(userId);
+      const balances = normBalances(target.app_metadata);
+      const b = balances.find((x) => x.id === String(balanceId)) || (balanceId == null && balances[0]);
+      if (!b) return json(404, { error: 'Balance not found.' });
+      const prev = b.label;
+      b.label = cleanLabel(label);
+      const out = await saveBalances(userId, target.app_metadata, balances,
+        prev !== b.label
+          ? { at: new Date().toISOString(), by: user.email, field: 'label', from: prev, to: b.label }
+          : null);
+      return json(200, { userId, balances: out });
     }
 
     // PUT /name { userId, name } — assign a display name (blank/email clears it)

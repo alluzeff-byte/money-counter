@@ -69,6 +69,14 @@
       line-height: 1.1;
     }
     .sub { margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--muted); }
+    .amount-row { display: flex; align-items: center; justify-content: center; gap: 0.4rem; }
+    .bal-nav {
+      border: none; background: none; cursor: pointer;
+      font-size: 2.25rem; line-height: 1; color: var(--muted);
+      padding: 0 0.2rem;
+    }
+    .bal-nav:hover { color: var(--text); }
+    .btn-row { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
     #balance-label.editable { cursor: text; }
     #balance-label.editable:hover { color: var(--text); }
     #balance-label.editable::after {
@@ -282,7 +290,11 @@
 
       <div id="balance-section">
         <p class="label" id="balance-label">Balance</p>
-        <p class="amount" id="amount">—</p>
+        <div class="amount-row">
+          <button type="button" class="bal-nav hidden" id="bal-prev" aria-label="Previous balance">&#8249;</button>
+          <p class="amount" id="amount">&mdash;</p>
+          <button type="button" class="bal-nav hidden" id="bal-next" aria-label="Next balance">&#8250;</button>
+        </div>
         <p class="sub" id="balance-sub"></p>
       </div>
 
@@ -294,7 +306,7 @@
           </label>
 
           <label class="fld" id="balance-editor">
-            <span>Set balance (£)</span>
+            <span>Set balance (£) — current: <span id="editing-label">Balance</span></span>
             <span class="row">
               <input type="number" id="balance-input" min="0" step="0.01" inputmode="decimal">
               <button type="button" class="primary" id="save-balance-btn">Save</button>
@@ -302,7 +314,10 @@
           </label>
           <p class="msg" id="admin-status"></p>
 
-          <button type="button" id="history-btn" class="hidden">History</button>
+          <div class="btn-row">
+            <button type="button" id="add-balance-btn" class="hidden">+ Add balance</button>
+            <button type="button" id="history-btn" class="hidden">History</button>
+          </div>
 
           <p class="msg hidden" id="no-users-msg">No users yet. Invite someone from the Config tab.</p>
         </div>
@@ -363,6 +378,7 @@
     var loginForm = $('login-form'), emailInput = $('email'), pwInput = $('password');
     var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), logoutBtn = $('logout-btn');
     var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn');
+    var balPrev = $('bal-prev'), balNext = $('bal-next'), addBalanceBtn = $('add-balance-btn'), editingLabelEl = $('editing-label');
     var adminStatus = $('admin-status'), inviteForm = $('invite-form'), inviteEmail = $('invite-email'), inviteStatus = $('invite-status');
     var userPicker = $('user-picker'), balanceEditor = $('balance-editor'), noUsersMsg = $('no-users-msg');
     var adminTabs = $('admin-tabs'), balanceSection = $('balance-section');
@@ -465,30 +481,60 @@
 
     // ---- app state ----
     var selfId = null, usersById = {}, allUsersById = {};
+    var currentBalances = [], balanceIdx = 0;
 
     function invitedSuffix(u) { return u.confirmed ? '' : ' · invited'; }
 
-    function setBalanceView(labelText, amount) {
-      amountEl.textContent = (typeof amount === 'number') ? fmt(amount) : (amount || '—');
-      balanceSub.textContent = labelText || '';
-    }
-
     function setBalanceHeading(text) {
-      // Don't clobber an in-progress inline edit.
-      if (balanceLabelEl.querySelector('input')) return;
+      if (balanceLabelEl.querySelector('input')) return; // mid-edit
       balanceLabelEl.textContent = text || 'Balance';
     }
 
-    // Admin: click the "BALANCE" heading to rename the selected user's balance.
+    function clearBalances() {
+      currentBalances = [];
+      balanceIdx = 0;
+      setBalanceHeading('Balance');
+      amountEl.textContent = '—';
+      balanceSub.textContent = '';
+      balPrev.classList.add('hidden');
+      balNext.classList.add('hidden');
+      if (editingLabelEl) editingLabelEl.textContent = 'Balance';
+    }
+
+    function setBalances(arr, subText) {
+      currentBalances = (Array.isArray(arr) && arr.length)
+        ? arr
+        : [{ id: 'default', label: 'Balance', amount: 0 }];
+      balanceSub.textContent = subText || '';
+      showBalanceAt(0);
+    }
+
+    function showBalanceAt(idx) {
+      if (!currentBalances.length) { clearBalances(); return; }
+      balanceIdx = Math.max(0, Math.min(idx, currentBalances.length - 1));
+      var b = currentBalances[balanceIdx];
+      setBalanceHeading(b.label);
+      amountEl.textContent = fmt(b.amount);
+      balPrev.classList.toggle('hidden', balanceIdx <= 0);
+      balNext.classList.toggle('hidden', balanceIdx >= currentBalances.length - 1);
+      balanceInput.value = b.amount;
+      if (editingLabelEl) editingLabelEl.textContent = b.label;
+    }
+
+    balPrev.addEventListener('click', function () { showBalanceAt(balanceIdx - 1); });
+    balNext.addEventListener('click', function () { showBalanceAt(balanceIdx + 1); });
+
+    // Admin: click the "BALANCE" heading to rename the balance currently shown.
     function beginLabelEdit() {
       if (balanceLabelEl.querySelector('input')) return;
       var u = usersById[userSelect.value];
-      if (!u) {
+      var b = currentBalances[balanceIdx];
+      if (!u || !b) {
         adminStatus.textContent = 'Select a user first.';
         adminStatus.className = 'msg err';
         return;
       }
-      var current = u.balanceLabel || 'Balance';
+      var current = b.label || 'Balance';
       var input = document.createElement('input');
       input.type = 'text';
       input.maxLength = 60;
@@ -508,15 +554,16 @@
         if (!save || val === current) return;
         adminStatus.textContent = 'Saving…';
         adminStatus.className = 'msg';
-        apiJson('/balance-label', jsonReq({ userId: u.id, label: val }, 'PUT'))
+        apiJson('/balance-label', jsonReq({ userId: u.id, balanceId: b.id, label: val }, 'PUT'))
           .then(function (res) {
-            u.balanceLabel = res.balanceLabel;
-            setBalanceHeading(res.balanceLabel);
-            adminStatus.textContent = 'Balance renamed to “' + res.balanceLabel + '” for ' + u.name + '.';
+            u.balances = res.balances;
+            currentBalances = res.balances;
+            showBalanceAt(balanceIdx);
+            adminStatus.textContent = 'Balance renamed for ' + u.name + '.';
             adminStatus.className = 'msg ok';
           })
           .catch(function (err) {
-            setBalanceHeading(u.balanceLabel);
+            showBalanceAt(balanceIdx);
             adminStatus.textContent = err.message;
             adminStatus.className = 'msg err';
           });
@@ -529,6 +576,31 @@
     }
     balanceLabelEl.addEventListener('click', function () {
       if (balanceLabelEl.classList.contains('editable')) beginLabelEdit();
+    });
+
+    addBalanceBtn.addEventListener('click', function () {
+      var u = usersById[userSelect.value];
+      if (!u) {
+        adminStatus.textContent = 'Select a user first.';
+        adminStatus.className = 'msg err';
+        return;
+      }
+      addBalanceBtn.disabled = true;
+      adminStatus.textContent = 'Adding…';
+      adminStatus.className = 'msg';
+      apiJson('/balances', jsonReq({ userId: u.id }, 'POST'))
+        .then(function (res) {
+          u.balances = res.balances;
+          currentBalances = res.balances;
+          showBalanceAt(currentBalances.length - 1); // jump to the new one
+          adminStatus.textContent = 'Added a balance for ' + u.name + '. Rename it via the heading.';
+          adminStatus.className = 'msg ok';
+        })
+        .catch(function (err) {
+          adminStatus.textContent = err.message;
+          adminStatus.className = 'msg err';
+        })
+        .then(function () { addBalanceBtn.disabled = false; });
     });
 
     function enterApp() {
@@ -545,11 +617,10 @@
         roleBadge.className = 'badge ' + (me.isAdmin ? 'admin' : 'user');
 
         if (me.isAdmin) {
-          // Admins have no balance of their own; they manage others.
-          setBalanceHeading('Balance');
+          // Admins have no balances of their own; they manage others.
           balanceLabelEl.classList.add('editable');
           balanceLabelEl.title = 'Click to rename this balance';
-          setBalanceView('', '—');
+          clearBalances();
           adminTabs.classList.remove('hidden');
           adminArea.classList.remove('hidden');
           selectTab('users');
@@ -561,8 +632,7 @@
         }
         balanceLabelEl.classList.remove('editable');
         balanceLabelEl.removeAttribute('title');
-        setBalanceHeading(me.balanceLabel);
-        setBalanceView('Your balance', me.balance);
+        setBalances(me.balances, 'Your balance');
         adminTabs.classList.add('hidden');
         adminArea.classList.add('hidden');
         balanceSection.classList.remove('hidden');
@@ -600,13 +670,13 @@
         userPicker.classList.toggle('hidden', !hasUsers);
         balanceEditor.classList.toggle('hidden', !hasUsers);
         historyBtn.classList.toggle('hidden', !hasUsers);
+        addBalanceBtn.classList.toggle('hidden', !hasUsers);
         noUsersMsg.classList.toggle('hidden', hasUsers);
         if (hasUsers) {
           userSelect.value = (prevUser in usersById) ? prevUser : managed[0].id;
           onUserSelect();
         } else {
-          setBalanceHeading('Balance');
-          setBalanceView('', '—');
+          clearBalances();
           closeHistory();
         }
 
@@ -627,10 +697,8 @@
     function onUserSelect() {
       var u = usersById[userSelect.value];
       if (!u) return;
-      setBalanceHeading(u.balanceLabel);
       var label = u.name + (u.confirmed ? '' : ' · invited, not signed in yet');
-      setBalanceView(label, u.balance);
-      balanceInput.value = u.balance;
+      setBalances(u.balances, label);
       adminStatus.textContent = '';
       adminStatus.className = 'msg';
       // Close any history window open for the previous user.
@@ -647,19 +715,26 @@
     function fmtVal(field, v) {
       return field === 'balance' ? fmt(v) : ('“' + v + '”');
     }
+    function historyText(e) {
+      if (e.field === 'invited') return 'invited' + (e.to ? ' (' + e.to + ')' : '');
+      if (e.field === 'balance-added') return 'balance added';
+      if (e.field === 'balance') {
+        return (e.balanceLabel ? '“' + e.balanceLabel + '” ' : '') +
+          'balance: ' + fmt(e.from) + ' → ' + fmt(e.to);
+      }
+      if (e.field === 'name') return 'name: ' + fmtVal('name', e.from) + ' → ' + fmtVal('name', e.to);
+      if (e.field === 'label') return 'balance name: ' + fmtVal('label', e.from) + ' → ' + fmtVal('label', e.to);
+      return e.field + ': ' + fmtVal(e.field, e.from) + ' → ' + fmtVal(e.field, e.to);
+    }
     function renderHistory(entries) {
       if (!entries || !entries.length) {
         historyBody.innerHTML = '<p class="empty">No changes recorded yet.</p>';
         return;
       }
-      var fieldName = { balance: 'balance', name: 'name', label: 'balance name' };
       var ul = document.createElement('ul');
       entries.forEach(function (e) {
         var li = document.createElement('li');
-        var what = e.field === 'invited'
-          ? ('invited' + (e.to ? ' (' + e.to + ')' : ''))
-          : ((fieldName[e.field] || e.field) + ': ' + fmtVal(e.field, e.from) + ' → ' + fmtVal(e.field, e.to));
-        li.textContent = fmtWhen(e.at) + ' · ' + what + ' · by ' + e.by;
+        li.textContent = fmtWhen(e.at) + ' · ' + historyText(e) + ' · by ' + e.by;
         ul.appendChild(li);
       });
       historyBody.innerHTML = '';
@@ -702,7 +777,8 @@
 
     saveBtn.addEventListener('click', function () {
       var u = usersById[userSelect.value];
-      if (!u) return;
+      var b = currentBalances[balanceIdx];
+      if (!u || !b) { adminStatus.textContent = 'Select a user first.'; adminStatus.className = 'msg err'; return; }
       var n = Number(balanceInput.value);
       if (!isFinite(n) || n < 0) {
         adminStatus.textContent = 'Enter a number of 0 or more.';
@@ -712,12 +788,13 @@
       saveBtn.disabled = true;
       adminStatus.textContent = 'Saving…';
       adminStatus.className = 'msg';
-      apiJson('/balance', jsonReq({ userId: u.id, balance: n }, 'PUT'))
+      apiJson('/balance', jsonReq({ userId: u.id, balanceId: b.id, amount: n }, 'PUT'))
         .then(function (res) {
-          u.balance = res.balance;
-          setBalanceView(u.name + (u.confirmed ? '' : ' · invited, not signed in yet'), res.balance);
-          balanceInput.value = res.balance;
-          adminStatus.textContent = 'Saved ' + fmt(res.balance) + ' for ' + u.name + '.';
+          u.balances = res.balances;
+          currentBalances = res.balances;
+          showBalanceAt(balanceIdx);
+          var cur = currentBalances[balanceIdx];
+          adminStatus.textContent = 'Saved ' + fmt(cur.amount) + ' to “' + cur.label + '” for ' + u.name + '.';
           adminStatus.className = 'msg ok';
         })
         .catch(function (err) {
