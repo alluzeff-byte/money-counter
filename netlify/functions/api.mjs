@@ -74,10 +74,11 @@ const appendHist = async (userId, balanceId, entry) => {
     const s = histStore();
     const k = histKey(userId, balanceId);
     const cur = await s.get(k, { type: 'json' }).catch(() => null);
-    const next = (Array.isArray(cur) ? cur : []).concat([entry]).slice(-HIST_CAP);
+    const e = { id: randomUUID(), ...entry };
+    const next = (Array.isArray(cur) ? cur : []).concat([e]).slice(-HIST_CAP);
     await s.setJSON(k, next);
     return null;
-  } catch (e) { console.error('appendHist:', (e && e.stack) || e); return (e && (e.message || String(e))) || 'blob write failed'; }
+  } catch (err) { console.error('appendHist:', (err && err.stack) || err); return (err && (err.message || String(err))) || 'blob write failed'; }
 };
 const deleteHist = async (userId, balanceId) => {
   try { await histStore().delete(histKey(userId, balanceId)); } catch (e) { console.error('deleteHist:', e && e.message); }
@@ -517,6 +518,23 @@ export async function handler(event, context) {
         amount: req.amount, comment: c, requestedBy: req.by,
       });
       return json(200, { userId, balances: out });
+    }
+
+    // PUT /history-comment { userId, balanceId, entryId, comment } — edit a
+    // history entry's comment
+    if (route === '/history-comment' && method === 'PUT') {
+      const { userId, balanceId, entryId, comment } = readBody(event);
+      if (!balanceId || !entryId) return json(400, { error: 'balanceId and entryId are required.' });
+      const s = histStore();
+      const k = histKey(userId || user.sub, balanceId);
+      const arr = await s.get(k, { type: 'json' }).catch(() => null);
+      if (!Array.isArray(arr)) return json(404, { error: 'No history for that balance.' });
+      const i = arr.findIndex((x) => String(x && (x.id || x.at)) === String(entryId));
+      if (i === -1) return json(404, { error: 'History entry not found.' });
+      const c = cleanComment(comment);
+      arr[i] = { ...arr[i], comment: c || undefined, commentEditedBy: user.email, commentEditedAt: nowIso() };
+      await s.setJSON(k, arr);
+      return json(200, { history: arr.slice().reverse() });
     }
 
     // PUT /name { userId, name }

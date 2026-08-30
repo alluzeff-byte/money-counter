@@ -271,6 +271,13 @@
     .history ul { list-style: none; margin: 0; padding: 0; }
     .history li { padding: 0.55rem 0; border-top: 1px solid var(--border); color: var(--muted); }
     .history li:first-child { border-top: none; }
+    .history li.hist-editable { cursor: pointer; }
+    .hist-comment-edit {
+      font: inherit; width: 100%;
+      padding: 0.35rem 0.5rem;
+      border: 1px solid var(--accent); border-radius: 6px;
+      background: var(--field); color: var(--text);
+    }
     .history .empty { color: var(--muted); margin: 0; }
     .hist-amt { font-weight: 700; }
     .hist-amt.plus { color: var(--hist-plus); }
@@ -1009,7 +1016,7 @@
 
       return apiJson('/me').then(function (me) {
         selfId = me.id;
-        who.textContent = whoLabel(me.name, me.email);
+        who.textContent = me.isAdmin ? (me.name || me.email) : whoLabel(me.name, me.email);
         roleBadge.textContent = me.isAdmin ? 'admin' : 'user';
         roleBadge.className = 'badge ' + (me.isAdmin ? 'admin' : 'user');
 
@@ -1172,6 +1179,8 @@
         default: return { desc: e.type || 'change' };
       }
     }
+    // History types that carry an editable comment.
+    var COMMENTABLE = { adjusted: 1, set: 1, 'topup-approved': 1, 'topup-rejected': 1 };
     function renderHistory(entries) {
       if (!entries || !entries.length) {
         historyBody.innerHTML = '<p class="empty">No changes recorded yet.</p>';
@@ -1180,9 +1189,11 @@
       // Entry types that actually move money — the rest get a green "!".
       var MONEY = { adjusted: 1, set: 1, 'topup-approved': 1 };
       var ul = document.createElement('ul');
-      entries.forEach(function (e) {
+      entries.forEach(function (e, i) {
         var p = histParts(e);
         var li = document.createElement('li');
+        li.dataset.idx = i;
+        if (amAdmin && COMMENTABLE[e.type]) li.classList.add('hist-editable');
         if (!MONEY[e.type]) {
           var bang = document.createElement('span');
           bang.className = 'hist-bang';
@@ -1212,7 +1223,48 @@
     }
 
     function closeHistory() { historyModal.classList.add('hidden'); }
-    var historyEntries = [], historyName = 'history';
+    var historyEntries = [], historyName = 'history', historyCtx = { userId: null, balanceId: null };
+
+    // Admin: double-click a commentable history line to edit its comment.
+    function editHistComment(li, entry) {
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'hist-comment-edit';
+      input.value = entry.comment || '';
+      input.placeholder = 'Comment ($$bold$$ %%red%% ^^green^^ &&blue&&)';
+      li.innerHTML = '';
+      li.appendChild(input);
+      input.focus();
+      var settled = false;
+      function finish(save) {
+        if (settled) return;
+        settled = true;
+        if (!save) { renderHistory(historyEntries); return; }
+        input.disabled = true;
+        apiJson('/history-comment', jsonReq({
+          userId: historyCtx.userId, balanceId: historyCtx.balanceId,
+          entryId: entry.id || entry.at, comment: input.value
+        }, 'PUT'))
+          .then(function (res) {
+            historyEntries = res.history || historyEntries;
+            renderHistory(historyEntries);
+          })
+          .catch(function (err) { settled = false; input.disabled = false; input.title = err.message; });
+      }
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+      });
+      input.addEventListener('blur', function () { finish(true); });
+    }
+    historyBody.addEventListener('dblclick', function (ev) {
+      if (!amAdmin) return;
+      var li = ev.target.closest && ev.target.closest('li.hist-editable');
+      if (!li || li.querySelector('input')) return;
+      var e = historyEntries[parseInt(li.dataset.idx, 10)];
+      if (e) editHistComment(li, e);
+    });
+
     function openHistory() {
       var b = curBal();
       if (!b) return;
@@ -1226,6 +1278,7 @@
         title = 'History — ' + u.name + ' · ' + b.label;
       }
       historyName = (who2 + b.label).trim();
+      historyCtx = { userId: uid, balanceId: b.id };
       historyEntries = [];
       historyExport.classList.toggle('hidden', !amAdmin);
       historyExport.disabled = true;
@@ -1399,7 +1452,7 @@
       nameStatus.className = 'msg';
       apiJson('/name', jsonReq({ userId: u.id, name: newName }, 'PUT'))
         .then(function (res) {
-          if (u.id === selfId) who.textContent = whoLabel(res.name, res.email);
+          if (u.id === selfId) who.textContent = amAdmin ? (res.name || res.email) : whoLabel(res.name, res.email);
           nameStatus.textContent = 'Saved. Name is now “' + res.name + '”.';
           nameStatus.className = 'msg ok';
           return loadUsers();
