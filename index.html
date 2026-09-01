@@ -1529,7 +1529,9 @@
     var pick = function (name) { return hashParams.get(name) || queryParams.get(name); };
     var inviteToken = pick('invite_token');
     var recoveryToken = pick('recovery_token');
-    var mode = inviteToken ? 'invite' : (recoveryToken ? 'recovery' : 'login');
+    var mcResetToken = pick('mc_reset');
+    var mode = inviteToken ? 'invite'
+      : (recoveryToken ? 'recovery' : (mcResetToken ? 'reset' : 'login'));
 
     function stripHash() {
       try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { location.hash = ''; }
@@ -1600,6 +1602,14 @@
             }).then(function (r) { if (!r.ok) throw new Error('Could not set the new password.'); });
           })
           .then(function () { stripHash(); mode = 'login'; });
+      } else if (mode === 'reset') {
+        flow = fetch('/api/reset', jsonReq({ token: mcResetToken, password: pw }, 'POST'))
+          .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; }); })
+          .then(function (res) {
+            if (!res.ok) throw new Error(res.d.error || 'Could not reset the password.');
+            stripHash(); mode = 'login';
+            return passwordGrant(res.d.email, pw); // sign in with the new password
+          });
       } else {
         flow = passwordGrant(emailInput.value.trim(), pw);
       }
@@ -1621,9 +1631,11 @@
       clearMsgs();
       var email = emailInput.value.trim();
       if (!email) { showError('Enter your email above first, then click "Forgot password?".'); return; }
-      fetch(ID + '/recover', jsonReq({ email: email }))
+      forgotBtn.disabled = true;
+      fetch('/api/forgot', jsonReq({ email: email }, 'POST'))
         .then(function () { showNote('If that email has an account, a reset link is on its way. Check inbox and spam.'); })
-        .catch(function () { showNote('If that email has an account, a reset link is on its way.'); });
+        .catch(function () { showNote('If that email has an account, a reset link is on its way.'); })
+        .then(function () { setTimeout(function () { forgotBtn.disabled = false; }, 3000); });
     });
   })();
   </script>

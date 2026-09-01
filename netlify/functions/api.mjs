@@ -157,13 +157,15 @@ export async function handler(event, context) {
   const user = cc.user;
   const identity = cc.identity;
 
-  if (!user) return json(401, { error: 'Not signed in.' });
   if (!identity || !identity.url) return json(500, { error: 'Identity context unavailable.' });
 
   const bearer = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
   const route = routeOf(event);
   const method = event.httpMethod;
-  const admin = isAdminMeta(user.app_metadata);
+  const admin = !!user && isAdminMeta(user.app_metadata);
+  const appUrl = () => process.env.URL
+    || (identity.url || '').replace(/\/\.netlify\/identity\/?$/, '')
+    || 'https://money-counter-kids.netlify.app';
 
   const adminFetch = async (path, init) => {
     if (!identity.token) return idFetch(identity.url, bearer, path, init);
@@ -201,23 +203,15 @@ export async function handler(event, context) {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  const notifyAdmins = async (subject, text) => {
+  // Send one email via Resend, retrying a 429/5xx (2 req/sec limit).
+  const resendSend = async ({ to, subject, text }) => {
     const key = process.env.RESEND_API_KEY;
-    if (!key) return;
-    const data = await adminFetch('/admin/users?per_page=200');
-    const recipients = [...new Set(
-      ((data && data.users) || [])
-        .filter((u) => isAdminMeta(u.app_metadata) && u.app_metadata && u.app_metadata.notifyEnabled)
-        .map((u) => notifyEmailOf(u.app_metadata, u.email))
-        .filter(isEmail),
-    )];
-    if (!recipients.length) return;
+    if (!key) { console.error('resendSend: RESEND_API_KEY not set'); return; }
+    if (!to || !to.length) return;
     const body = JSON.stringify({
       from: process.env.NOTIFY_FROM || 'Money Counter <onboarding@resend.dev>',
-      to: recipients, subject, text,
+      to, subject, text,
     });
-    // Resend's default limit is 2 requests/sec — retry a 429 (or 5xx) after a
-    // pause so bursts of requests all get their email.
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
         const res = await fetch('https://api.resend.com/emails', {
@@ -237,9 +231,33 @@ export async function handler(event, context) {
         return;
       } catch (e) {
         console.error('Resend request error:', (e && e.message) || e);
-        return; // a timeout/network error already cost time — don't retry
+        return;
       }
     }
+  };
+
+  const notifyAdmins = async (subject, text) => {
+    if (!process.env.RESEND_API_KEY) return;
+    const data = await adminFetch('/admin/users?per_page=200');
+    const recipients = [...new Set(
+      ((data && data.users) || [])
+        .filter((u) => isAdminMeta(u.app_metadata) && u.app_metadata && u.app_metadata.notifyEnabled)
+        .map((u) => notifyEmailOf(u.app_metadata, u.email))
+        .filter(isEmail),
+    )];
+    await resendSend({ to: recipients, subject, text });
+  };
+
+  const findUserByEmail = async (email) => {
+    const em = String(email || '').trim().toLowerCase();
+    for (let page = 1; page <= 25; page++) {
+      const data = await adminFetch(`/admin/users?per_page=200&page=${page}`);
+      const batch = (data && data.users) || [];
+      const hit = batch.find((u) => String(u.email || '').toLowerCase() === em);
+      if (hit) return hit;
+      if (batch.length < 200) break;
+    }
+    return null;
   };
 
   const saveBalances = async (userId, targetMeta, balances) => {
@@ -259,7 +277,51 @@ export async function handler(event, context) {
     balances.find((x) => x.id === String(balanceId)) || (balanceId == null ? balances[0] : null);
 
   try {
+    // ---- Public (no login required) ----------------------------------
+
+    // POST /forgot { email } — email a password-reset link via Resend
+    if (route === '/forgot' && method === 'POST') {
+      const { email } = readBody(event);
+      const em = String(email || '').trim().toLowerCase();
+      if (!isEmail(em)) return json(400, { error: 'Enter a valid email address.' });
+      try {
+        const target = await findUserByEmail(em);
+        if (target && target.id) {
+          const tok = randomUUID();
+          await histStore().setJSON(`reset__${tok}`, { userId: target.id, email: em, exp: Date.now() + 3600000 });
+          await resendSend({
+            to: [em],
+            subject: 'Reset your Money Counter password',
+            text: 'Someone asked to reset the password for your Money Counter account.\n\n'
+              + 'Open this link to choose a new password (valid for 1 hour):\n'
+              + `${appUrl()}/#mc_reset=${tok}\n\n`
+              + "If you didn't request this, you can ignore this email.",
+          });
+        }
+      } catch (e) { console.error('/forgot:', (e && e.message) || e); }
+      return json(200, { ok: true }); // never reveal whether the address exists
+    }
+
+    // POST /reset { token, password } — set a new password from a reset link
+    if (route === '/reset' && method === 'POST') {
+      const { token, password } = readBody(event);
+      if (!token) return json(400, { error: 'Missing reset token.' });
+      if (String(password || '').length < 6) return json(400, { error: 'Password must be at least 6 characters.' });
+      const key = `reset__${String(token)}`;
+      const rec = await histStore().get(key, { type: 'json' }).catch(() => null);
+      if (!rec || !rec.userId || (rec.exp && rec.exp < Date.now())) {
+        return json(400, { error: 'This reset link is invalid or has expired.' });
+      }
+      await adminFetch(`/admin/users/${encodeURIComponent(rec.userId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ password: String(password) }),
+      });
+      await histStore().delete(key).catch(() => {});
+      return json(200, { email: rec.email });
+    }
+
     // ---- Any authenticated user ---------------------------------------
+    if (!user) return json(401, { error: 'Not signed in.' });
 
     // GET /me — the caller's own record
     if (route === '/me' && method === 'GET') {
@@ -320,14 +382,11 @@ export async function handler(event, context) {
       b.requests = [...b.requests, { id: randomUUID(), amount: reqAmount, comment: c, at: nowIso(), by: user.email }].slice(-25);
       const out = await saveBalances(user.sub, target.app_metadata, balances);
 
-      const appUrl = process.env.URL
-        || (identity.url || '').replace(/\/\.netlify\/identity\/?$/, '')
-        || 'https://money-counter-kids.netlify.app';
       await notifyAdmins(
         `Top-up request: ${gbp(reqAmount)} on "${b.label}"`,
         `${user.email} requested a top-up of ${gbp(reqAmount)} on "${b.label}".\n\n`
         + `Comment: ${c || '(none)'}\n\n`
-        + `Review it in the admin console:\n${appUrl}`,
+        + `Review it in the admin console:\n${appUrl()}`,
       ).catch((e) => console.error('notifyAdmins:', (e && e.message) || e));
 
       return json(200, { balances: out });
