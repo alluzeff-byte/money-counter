@@ -949,22 +949,25 @@
       }
 
       // Actual view: + adds a new balance.
-      balPlus.disabled = true;
-      adminStatus.textContent = 'Adding…';
-      adminStatus.className = 'msg';
-      apiJson('/balances', jsonReq({ userId: u.id }, 'POST'))
-        .then(function (res) {
-          u.balances = res.balances;
-          allBalances = res.balances;
-          showBalanceAt(visibleBalances().length - 1); // jump to the new one
-          adminStatus.textContent = 'Added a balance for ' + u.name + '. Rename it via the heading.';
-          adminStatus.className = 'msg ok';
-        })
-        .catch(function (err) {
-          adminStatus.textContent = err.message;
-          adminStatus.className = 'msg err';
-        })
-        .then(function () { balPlus.disabled = false; });
+      askConfirm('Add a new balance for ' + u.name + '?').then(function (ok) {
+        if (!ok) return;
+        balPlus.disabled = true;
+        adminStatus.textContent = 'Adding…';
+        adminStatus.className = 'msg';
+        apiJson('/balances', jsonReq({ userId: u.id }, 'POST'))
+          .then(function (res) {
+            u.balances = res.balances;
+            allBalances = res.balances;
+            showBalanceAt(visibleBalances().length - 1); // jump to the new one
+            adminStatus.textContent = 'Added a balance for ' + u.name + '. Rename it via the heading.';
+            adminStatus.className = 'msg ok';
+          })
+          .catch(function (err) {
+            adminStatus.textContent = err.message;
+            adminStatus.className = 'msg err';
+          })
+          .then(function () { balPlus.disabled = false; });
+      });
     });
 
     balMinus.addEventListener('click', function () {
