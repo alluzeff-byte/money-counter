@@ -214,6 +214,25 @@
       width: 100%;
     }
     #login-form { display: flex; flex-direction: column; gap: 0.6rem; margin: 1rem 0 0.25rem; text-align: left; }
+    .pw-field { position: relative; }
+    .pw-field input { padding-right: 2.4rem; }
+    .pw-toggle {
+      position: absolute;
+      right: 0.35rem;
+      top: 50%;
+      transform: translateY(-50%);
+      border: none;
+      background: none;
+      padding: 0.3rem;
+      line-height: 0;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .pw-toggle:hover { color: var(--text); }
+    .pw-toggle svg { display: block; width: 1.1rem; height: 1.1rem; }
+    .pw-toggle .eye-off { display: none; }
+    .pw-toggle.shown .eye { display: none; }
+    .pw-toggle.shown .eye-off { display: block; }
     .link-btn {
       background: none; border: none; padding: 0.4rem;
       color: var(--muted); text-decoration: underline;
@@ -366,7 +385,13 @@
 
       <form id="login-form">
         <input type="email" id="email" placeholder="Email" autocomplete="username" required>
-        <input type="password" id="password" placeholder="Password" autocomplete="current-password" required>
+        <span class="pw-field">
+          <input type="password" id="password" placeholder="Password" autocomplete="current-password" required>
+          <button type="button" class="pw-toggle" id="pw-toggle" aria-label="Show password" aria-pressed="false" tabindex="-1">
+            <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a18.6 18.6 0 0 1 4.22-5.06M9.9 4.24A10.6 10.6 0 0 1 12 5c7 0 11 7 11 7a18.6 18.6 0 0 1-2.16 2.94M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>
+          </button>
+        </span>
         <button type="submit" class="primary" id="submit-btn">Log in</button>
       </form>
       <button type="button" class="link-btn" id="forgot-btn">Forgot password?</button>
@@ -547,6 +572,14 @@
     var gateMsg = $('gate-msg'), gateError = $('gate-error'), gateNote = $('gate-note');
     var loginForm = $('login-form'), emailInput = $('email'), pwInput = $('password');
     var submitBtn = $('submit-btn'), forgotBtn = $('forgot-btn'), logoutBtn = $('logout-btn');
+    var pwToggle = $('pw-toggle');
+    pwToggle.addEventListener('click', function () {
+      var shown = pwInput.type === 'text';
+      pwInput.type = shown ? 'password' : 'text';
+      pwToggle.classList.toggle('shown', !shown);
+      pwToggle.setAttribute('aria-pressed', String(!shown));
+      pwToggle.setAttribute('aria-label', shown ? 'Show password' : 'Hide password');
+    });
     var userSelect = $('user-select'), balanceInput = $('balance-input'), saveBtn = $('save-balance-btn'), adjustComment = $('adjust-comment');
     var balPrev = $('bal-prev'), balNext = $('bal-next');
     var balPlus = $('bal-plus'), balMinus = $('bal-minus'), noBalanceMsg = $('no-balance-msg');
