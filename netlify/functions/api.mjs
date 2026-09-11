@@ -328,9 +328,22 @@ export async function handler(event, context) {
       let meta = user.app_metadata || {};
       let fetched = false;
       try {
-        const fresh = await idFetch(identity.url, bearer, '/user');
+        // Prefer the authoritative admin-token lookup (same path every write
+        // goes through) over the caller's own /user self-fetch, which can
+        // echo data baked into the access token at login time and lag a
+        // recent write until the next fresh token.
+        const fresh = identity.token
+          ? await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(user.sub)}`)
+          : await idFetch(identity.url, bearer, '/user');
         if (fresh && fresh.app_metadata) { meta = fresh.app_metadata; fetched = true; }
-      } catch { /* fall back to the token copy */ }
+      } catch {
+        // Admin-token lookup failed (e.g. netlify dev) — fall back to the
+        // caller's own token before giving up to the JWT copy.
+        try {
+          const fresh = await idFetch(identity.url, bearer, '/user');
+          if (fresh && fresh.app_metadata) { meta = fresh.app_metadata; fetched = true; }
+        } catch { /* fall back to the token copy */ }
+      }
 
       let balances = [];
       try { balances = normBalances(meta); }
