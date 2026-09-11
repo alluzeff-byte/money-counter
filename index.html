@@ -515,15 +515,13 @@
 
           <label class="fld">
             <span>Notification email</span>
-            <span class="row">
-              <input type="email" id="notify-email" autocomplete="off">
-              <button type="button" class="primary" id="notify-save">Save</button>
-            </span>
+            <input type="email" id="notify-email" autocomplete="off">
           </label>
           <label class="chk">
             <input type="checkbox" id="notify-enabled">
             <span>Send mail notifications</span>
           </label>
+          <button type="button" class="primary" id="notify-save">Save</button>
           <p class="msg" id="notify-status"></p>
         </div>
       </div>
@@ -1501,11 +1499,11 @@
         .then(function () { saveNameBtn.disabled = false; });
     });
 
-    notifySaveBtn.addEventListener('click', function () {
+    function saveNotify() {
       notifySaveBtn.disabled = true;
       notifyStatus.textContent = 'Saving…';
       notifyStatus.className = 'msg';
-      apiJson('/notify', jsonReq({
+      return apiJson('/notify', jsonReq({
         email: (notifyEmailInput.value || '').trim(),
         enabled: notifyEnabledInput.checked
       }, 'PUT'))
@@ -1522,7 +1520,11 @@
           notifyStatus.className = 'msg err';
         })
         .then(function () { notifySaveBtn.disabled = false; });
-    });
+    }
+    notifySaveBtn.addEventListener('click', saveNotify);
+    // Persist the checkbox immediately on toggle — don't rely on the user
+    // also noticing/clicking the (email-focused) Save button.
+    notifyEnabledInput.addEventListener('change', saveNotify);
 
     inviteForm.addEventListener('submit', function (e) {
       e.preventDefault();
