@@ -336,7 +336,9 @@ export async function handler(event, context) {
           ? await idFetch(identity.url, identity.token, `/admin/users/${encodeURIComponent(user.sub)}`)
           : await idFetch(identity.url, bearer, '/user');
         if (fresh && fresh.app_metadata) { meta = fresh.app_metadata; fetched = true; }
-      } catch {
+        console.log('me/GET fresh', { sub: user.sub, viaAdmin: !!identity.token, notifyEnabled: fresh && fresh.app_metadata && fresh.app_metadata.notifyEnabled });
+      } catch (e) {
+        console.error('me/GET fresh-fetch failed:', e && e.message);
         // Admin-token lookup failed (e.g. netlify dev) — fall back to the
         // caller's own token before giving up to the JWT copy.
         try {
@@ -344,6 +346,7 @@ export async function handler(event, context) {
           if (fresh && fresh.app_metadata) { meta = fresh.app_metadata; fetched = true; }
         } catch { /* fall back to the token copy */ }
       }
+      console.log('me/GET result', { sub: user.sub, fetched, notifyEnabled: meta && meta.notifyEnabled, jwtNotifyEnabled: user.app_metadata && user.app_metadata.notifyEnabled });
 
       let balances = [];
       try { balances = normBalances(meta); }
@@ -639,6 +642,7 @@ export async function handler(event, context) {
         method: 'PUT',
         body: JSON.stringify({ app_metadata: merged }),
       });
+      console.log('notify/PUT', { sub: user.sub, requestedEnabled: !!enabled, mergedEnabled: merged.notifyEnabled, updatedEnabled: updated.app_metadata && updated.app_metadata.notifyEnabled });
       return json(200, {
         notifyEmail: notifyEmailOf(updated.app_metadata, user.email),
         notifyEnabled: !!updated.app_metadata.notifyEnabled,
