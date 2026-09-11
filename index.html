@@ -1158,8 +1158,8 @@
     function quote(v) { return '“' + (v == null ? '' : v) + '”'; }
 
     // Comment markup delimiters (also used to strip for export).
-    var COMMENT_RE = /\$\$([\s\S]+?)\$\$|%%([\s\S]+?)%%|\^\^([\s\S]+?)\^\^|&&([\s\S]+?)&&/g;
-    // Render comment text: $$…$$ bold, %%…%% red, ^^…^^ green, &&…&& blue.
+    var COMMENT_RE = /\$([\s\S]+?)\$|%([\s\S]+?)%|\^([\s\S]+?)\^|&([\s\S]+?)&/g;
+    // Render comment text: $…$ bold, %…% red, ^…^ green, &…& blue.
     function fmtComment(str) {
       var frag = document.createDocumentFragment();
       var s = String(str == null ? '' : str);
@@ -1179,7 +1179,7 @@
       if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
       return frag;
     }
-    // Append ` — “<comment>”` (with $$bold$$) to a node.
+    // Append ` — “<comment>”` (with $bold$) to a node.
     function appendComment(node, comment) {
       if (!comment) return;
       node.appendChild(document.createTextNode(' — “'));
@@ -1266,7 +1266,7 @@
       input.type = 'text';
       input.className = 'hist-comment-edit';
       input.value = entry.comment || '';
-      input.placeholder = 'Comment ($$bold$$ %%red%% ^^green^^ &&blue&&)';
+      input.placeholder = 'Comment ($bold$ %red% ^green^ &blue&)';
       li.innerHTML = '';
       li.appendChild(input);
       input.focus();
