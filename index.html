@@ -174,7 +174,8 @@
       border-bottom: 1px solid var(--border);
       font-size: 0.85rem;
     }
-    .userbar .who { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .userbar .who { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .userbar-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; white-space: nowrap; }
     .badge {
       display: inline-block;
       padding: 0.15rem 0.55rem;
@@ -378,7 +379,7 @@
     <section id="app" class="hidden">
       <div class="userbar">
         <span class="who" id="who"></span>
-        <span>
+        <span class="userbar-actions">
           <span class="badge" id="role-badge"></span>
           <button id="logout-btn">Log out</button>
         </span>
